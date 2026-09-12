@@ -61,6 +61,146 @@ rather than looping indefinitely. Leave it on ∞ to loop until you stop it.
 
 ---
 
+## Mistake tracking
+
+`tracker.js` aligns what was recognised against the canonical text and reports
+what went wrong. It is deliberately independent of how the speech was
+recognised: swapping the browser's recogniser for a Whisper or CTC endpoint
+means changing `startMic` in `app.js` and nothing else.
+
+**How it works.** Recognised words are aligned against a window of the text
+with a semi-global Needleman-Wunsch alignment over word-level edit distance —
+the approach Tarteel describe in their published work, where text alignment
+replaces acoustic alignment. Matches, substitutions, omissions and insertions
+all fall out of one traceback, which a greedy "is this the next word" scan
+cannot do: it has no way to tell a skipped word from a misheard one.
+
+The alignment is semi-global on purpose. Every recognised word must be placed,
+but the text may run past the end for free — text after the last word spoken
+has not been skipped, it just has not been reached. Text jumped over on the way
+still costs, which is what makes a skipped ayah visible as a skip. A fully
+global alignment scores "matched here" and "matched the identical phrase forty
+words later" the same and picks arbitrarily, and the Qur'an is full of
+identical phrases.
+
+**What it reports:** wrong or substituted word (down to which letters
+differed), words missed, whole ayat skipped, repeats, hesitations, restarts,
+and drifting into a similar passage elsewhere — caught with a 4-gram index over
+all 77,430 words, which is what makes the mutashābihāt case detectable.
+
+**Confidence gating.** A recogniser makes errors that look exactly like
+recitation mistakes. A finding is only reported when the words *around* it
+aligned cleanly: local agreement is the evidence that the disagreement in the
+middle is real. Confidence is measured across the words that did line up, with
+gaps excluded — counting an omission against the evidence for that omission
+would make skips undetectable. Told repeatedly that you erred when you did not,
+you would stop trusting it, so silence is the better failure.
+
+**What it does not do.** Tajweed. Rulings like madd length, ghunnah and ikhfāʾ
+are acoustic and durational; they cannot be recovered from a text transcript at
+all. That needs frame-level acoustic output — which is what the on-device
+engine below provides.
+
+**Testing.** `build/test_tracker.mjs` in the source tree drives the engine
+through clean recitation, recogniser noise, a skipped ayah, a substituted word,
+a dropped word, a repeat, a restart and a drift, asserting both that real
+mistakes are caught and that clean recitation and noisy recognition produce
+nothing.
+
+---
+
+## The on-device engine
+
+Audio → Listening offers two ways of hearing you.
+
+**Browser speech recognition** is the default: nothing to download, but your
+voice goes to the browser vendor's service, it needs a network, and it hands
+back words with no timing. A lengthened madd and a clipped one are the same
+word to it.
+
+**The on-device model** is a CTC acoustic model — the one `ctc/` trains — run
+through `onnxruntime-web` in a worker. Your voice never leaves the device, it
+works with no network, and because CTC output is frame-by-frame it gives a
+start and end time for every letter. That is what makes madd measurable at all.
+
+### Installing a trained model
+
+The Colab notebook writes `web-model/` into Drive, containing
+`model.int8.onnx` and `model.json`. Copy that folder in beside `config.js`:
+
+```
+web-model/
+  model.int8.onnx    the quantised model, about 95 MB
+  model.json         vocabulary, blank id, separator id, ms per frame
+```
+
+Then pick **On-device model** in the Audio panel and press **Download the
+model**. It goes into Cache Storage once and stays there; the app shell
+deliberately does not include it, so someone who only wants to read never pays
+the 95 MB.
+
+Paths, and where the ONNX runtime comes from, are in `config.js` under `ctc`.
+The runtime defaults to a pinned build on jsDelivr and is cached after first
+use. Vendoring `ort.min.js` and its `.wasm` files onto your own domain and
+pointing `ctc.ort` / `ctc.wasm` at them makes the engine work on a device that
+has never been online.
+
+### How it works
+
+Audio is captured at 16 kHz — resampled with a windowed-sinc lowpass when the
+device insists on 44.1 or 48 kHz, because plain decimation folds everything
+above 8 kHz back down into the speech band as noise the model has never heard.
+Every 700 ms the last few seconds go to the worker, which normalises them the
+way the training feature extractor did, runs the model, takes a log-softmax and
+produces two things:
+
+- a **greedy decode**, grouped into words, fed to exactly the same tracker the
+  speech path feeds. Position, skips, substitutions and drift all keep working
+  unchanged — the tracker cannot tell which engine is talking to it.
+- a **forced alignment** of the text that *should* be there, which the app
+  supplies a window at a time. Letters the audio does not support are
+  underlined in brass: a question about pronunciation, not a claim that the
+  word was wrong, and deliberately only ever shown for words already recited.
+
+### Why duration is measured between spikes
+
+A trained CTC model is **peaky**: it spends almost every frame predicting the
+blank and fires a single spike where each letter lands. Span width is therefore
+close to constant — one frame for everything — and reading duration off it
+reads noise. What the spikes carry exactly is *onset*, so length here is the
+interval from one letter's spike to the next one's, which is the same quantity
+a phonetician would measure.
+
+On a real alignment of 108:2 that gives 540, 520, 200 ms for the opening
+letters, 40 ms for the alef wasla the reciter correctly elides, and 960 ms for
+the held syllable before the pause — against a median of 220 ms. That ratio is
+the madd, and it is visible without the vowel marks being in the vocabulary at
+all, because a consonant's onset-to-onset interval *is* its syllable's length.
+
+Letters that are silent by rule — alef wasla after a vowel, the small waw and
+yeh — are never flagged. Forced alignment has to place every target symbol
+somewhere, so a silent letter always lands on a frame that does not support it.
+Marking that would be reporting someone for obeying the rule.
+
+A word is handed over once and never revised. The rule for "once" is distance
+from the live edge: a word whose last frame is within 160 ms of the end of the
+window may still grow another letter, so it waits. Everything behind that is
+settled, and when the window outgrows seven seconds it is cut at the end of the
+last word already handed over, so no audio is ever decoded twice.
+
+Three failures in a row stop the loop rather than retrying every 700 ms — a
+broken model or a missing runtime should say so, not bury itself in a log.
+
+**Testing.** `ctc/web/test_align.mjs` drives the aligner with hand-built
+emission matrices where the right answer is known exactly.
+`ctc/web/test_engine.mjs` runs the engine against a fake microphone and a fake
+worker, asserting that no word is emitted twice across window boundaries and
+that a 12 kHz tone is rejected rather than folded into the speech band.
+`ctc/web/test_worker.mjs` checks the log-softmax against a reference and that a
+loud and a quiet recording of the same thing reach the model identically.
+
+---
+
 ## Choosing reciters — `config.js`
 
 `config.js` is the only file you need to touch to change the audio. It holds
@@ -120,10 +260,14 @@ any audio.
 
 ## Known limits
 
-- **Recite-to-reveal** uses the Web Speech API, which means Chrome, Edge and
-  Safari. Firefox has no support and the microphone button is disabled there.
-  Recognition is sent to the browser vendor's service, so it needs a network
-  even when audio is saved offline.
+- **Browser speech recognition** means Chrome, Edge and Safari; Firefox has no
+  support. Recognition is sent to the browser vendor's service, so it needs a
+  network even when audio is saved offline. The on-device engine has neither
+  restriction — it runs anywhere with WebAssembly, Firefox included — but it is
+  a 95 MB download and needs a trained model to have been deployed.
+- **The on-device engine is only as good as the model behind it.** A model
+  trained on two reciters and one juzʾ will follow those voices and struggle
+  with yours. More voices is the single biggest lever.
 - **iOS** will not autoplay audio without a user gesture, and installs the app
   to the home screen only through Safari's Share menu.
 - **Progress** (repetitions and stage) is stored in `localStorage`, per
@@ -137,8 +281,13 @@ any audio.
 ```
 index.html     the page
 styles.css     all styling, light and dark, driven by CSS custom properties
-config.js      reciters and audio sources — the file to edit
+config.js      reciters, audio sources and model paths — the file to edit
 app.js         the whole application
+tracker.js     alignment and mistake detection, independent of the recogniser
+ctc-align.js   CTC forced alignment and greedy decoding
+ctc-engine.js  microphone, resampling, streaming, and the model's lifecycle
+ctc-worker.js  the ONNX session — all inference, off the main thread
+web-model/     a trained model, if you have deployed one (not included)
 sw.js          service worker: offline shell + saved recitation
 manifest.webmanifest, icon-*.png    home-screen install
 data/

@@ -86,6 +86,10 @@
       <span class="cl" id="cnLabel">reps</span>
       <span class="cfill" id="cnFill"></span>
     </button>
+    <button class="revbtn" id="revOpen" aria-label="Recitation review" title="Review">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16M4 12h10M4 19h7"/><path d="M15 17l2 2 4-4"/></svg>
+      <span class="revdot" id="revDot">0</span>
+    </button>
     <button class="mic" id="micBtn" aria-label="Recite to reveal" title="Recite to reveal">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4"/></svg>
     </button>
@@ -119,6 +123,20 @@
     </div>
 
     <div class="grp">
+      <div class="lbl">Listening</div>
+      <select class="sel" id="engineSel" aria-label="Recitation engine">
+        <option value="speech">Browser speech recognition</option>
+        <option value="local">On-device model — letter accurate</option>
+      </select>
+      <div class="note" id="engNote"></div>
+      <div class="foot" id="engFoot" style="display:none">
+        <button class="btn pri" id="mdlGet">Download the model</button>
+        <button class="btn" id="mdlDrop" style="display:none">Remove it</button>
+      </div>
+      <div class="prog" id="mdlProg"><i id="mdlBar"></i></div>
+    </div>
+
+    <div class="grp">
       <div class="lbl">Save for offline</div>
       <div class="foot">
         <button class="btn pri" id="dlSurah">Download this surah</button>
@@ -136,6 +154,24 @@
         <button class="btn" id="dlClear">Remove all saved audio</button>
       </div>
     </div>
+  </div>
+</section>
+
+<section class="panel" id="revPanel" aria-label="Recitation review">
+  <div class="grab"></div>
+  <div class="phead">
+    <div class="ttl">Review<em id="revCount"></em></div>
+    <button class="icon" id="revClose" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+  </div>
+  <div class="pbody">
+    <div class="revsum" id="revSum"></div>
+    <div id="revList" class="dllist"></div>
+    <div class="foot">
+      <button class="btn" id="revClear">Clear this session</button>
+    </div>
+    <div class="note">Only findings the tracker was confident about are listed. When the recognised
+      words around a slip do not agree with the text, it stays quiet rather than blaming you for
+      something the microphone got wrong.</div>
   </div>
 </section>
 
@@ -245,6 +281,9 @@
 <script src="data/data-tr.js"></script>
 <script src="data/data-wbw.js"></script>
 <script src="config.js"></script>
+<script src="tracker.js"></script>
+<script src="ctc-align.js"></script>
+<script src="ctc-engine.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -9,14 +9,19 @@
    opaque: the page cannot read them, but this worker can hand them straight
    to the <audio> element, which is what makes offline playback work. */
 
-var SHELL = "sabaq-shell-v1";
+var SHELL = "sabaq-shell-v2";   /* bumped: new files in the shell, so old copies must go */
 var AUDIO = "sabaq-audio-v1";
+var MODEL = "sabaq-model-v1";   /* the on-device recitation model, and the runtime it needs */
 
 var SHELL_FILES = [
   "./",
   "index.html",
   "styles.css",
   "config.js",
+  "tracker.js",
+  "ctc-align.js",
+  "ctc-engine.js",
+  "ctc-worker.js",
   "app.js",
   "manifest.webmanifest",
   "icon-192.png",
@@ -43,7 +48,7 @@ self.addEventListener("activate", function (e) {
   e.waitUntil(
     caches.keys().then(function (keys) {
       return Promise.all(keys.map(function (k) {
-        if (k !== SHELL && k !== AUDIO) return caches.delete(k);
+        if (k !== SHELL && k !== AUDIO && k !== MODEL) return caches.delete(k);
       }));
     }).then(function () { return self.clients.claim(); })
   );
@@ -53,9 +58,44 @@ function isAudio(url) {
   return /\.mp3(\?|$)/i.test(url) || /\/quran\/audio\//.test(url);
 }
 
+function isRuntime(url) {
+  /* the ONNX runtime and its wasm, wherever config.js points them */
+  return /onnxruntime|ort[-.].*\.(js|wasm|mjs)(\?|$)|\.wasm(\?|$)/i.test(url);
+}
+
 self.addEventListener("fetch", function (e) {
   var req = e.request;
   if (req.method !== "GET") return;
+
+  // The model itself is written to its own cache by the page, deliberately
+  // and once. It must not also be pulled into the app shell — that is a
+  // second 95 MB copy of the same file — so it is left to the network here
+  // and served from MODEL by the page, not by this worker.
+  if (/model\.int8\.onnx(\?|$)/.test(req.url)) {
+    e.respondWith(
+      caches.open(MODEL).then(function (c) {
+        return c.match(req).then(function (hit) { return hit || fetch(req); });
+      }).catch(function () { return fetch(req); })
+    );
+    return;
+  }
+
+  // the runtime: cache it the first time it loads, so the engine works
+  // offline afterwards even though it comes from a CDN
+  if (isRuntime(req.url)) {
+    e.respondWith(
+      caches.open(MODEL).then(function (c) {
+        return c.match(req, { ignoreVary: true }).then(function (hit) {
+          if (hit) return hit;
+          return fetch(req).then(function (res) {
+            if (res && (res.ok || res.type === "opaque")) c.put(req, res.clone());
+            return res;
+          });
+        });
+      }).catch(function () { return fetch(req); })
+    );
+    return;
+  }
 
   // saved recitation: cache first, network as the fallback
   if (isAudio(req.url)) {

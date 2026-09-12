@@ -41,6 +41,7 @@ setTimeout(function(){connectDb(4)},400);
 function pad(n){return n<10?"0"+n:""+n}
 function arDigits(n){return String(n).replace(/\d/g,function(d){return String.fromCharCode(0x660+ +d)})}
 function esc(t){return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;")}
+function mb(n){return (n/1048576).toFixed(n<10485760?1:0)+" MB"}
 var DIAC=/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u08D3-\u08FF\u0640\u200B-\u200F]/g;
 function norm(w){
   return w.replace(DIAC,"")
@@ -62,7 +63,7 @@ function repsOf(s,a){var r=rec(s,a);return r?(r.rp||0):0}
 function setRec(s,a,patch){
   var k=key(s,a),r=store.prog[k]||{st:0,rp:0};
   for(var p in patch) r[p]=patch[p];
-  if(!r.st&&!r.rp) delete store.prog[k]; else store.prog[k]=r;
+  if(!r.st&&!r.rp&&!r.mk) delete store.prog[k]; else store.prog[k]=r;
   save();
 }
 function meterHTML(s){
@@ -118,7 +119,7 @@ function paintSurah(){
     var gl=(store.wb&&WB&&WB[String(curS)])?WB[String(curS)][i]:null;
     AS[v]=f;
     for(var j=0;j<ws.length;j++){
-      SEQ.push({a:v,n:norm(ws[j])});
+      SEQ.push({a:v,n:norm(ws[j]),raw:ws[j]});
       wh+='<span class="w" data-f="'+f+'">'+
           '<i class="aw" data-h="'+esc(head(ws[j]))+'">'+esc(ws[j])+'</i>'+
           (gl?'<i class="gl">'+esc(gl[j]||"")+'</i>':'')+
@@ -156,12 +157,13 @@ function paintSurah(){
 function updateAyahRow(a){
   var el=$("ayat").querySelector('.ayah[data-a="'+a+'"]');
   if(el){
-    var st=stateOf(curS,a),rp=repsOf(curS,a);
+    var st=stateOf(curS,a),rp=repsOf(curS,a),r0=rec(curS,a),mk=r0?(r0.mk||0):0;
     el.querySelector(".spine").className="spine"+(st?" s"+st:"");
     el.querySelector(".ahead").innerHTML=
       '<span class="aref">'+curS+':'+a+'</span>'+
       (st?'<span class="astate s'+st+'">'+STAGE[st]+'</span>':'')+
       (rp?'<span class="areps">×'+rp+'</span>':'')+
+      (mk?'<span class="amiss">'+mk+' slip'+(mk===1?'':'s')+'</span>':'')+
       '<button class="ago" data-open="'+a+'">Ayah tools ›</button>';
   }
   var mt=$("shead").querySelector(".meter"); if(mt) mt.innerHTML=meterHTML(curS);
@@ -214,7 +216,7 @@ $("ayat").addEventListener("click",function(e){
   var w=e.target.closest(".w");
   if(w){
     var f=+w.dataset.f;
-    if(listening){ pos=f; setNow(pos); flashStatus(); return; }
+    if(listening){ pos=f; if(TRK) TRK.position=f; setNow(pos); flashStatus(); return; }
     if(mask!=="none"){ revealWord(f,!revealed[f]); return; }
   }
   var ay=e.target.closest(".ayah");
@@ -270,7 +272,7 @@ function drawer(on){
 }
 $("pick").onclick=function(){drawer(true)};
 $("dClose").onclick=function(){drawer(false)};
-$("scrim").onclick=function(){drawer(false);closePanel();dlPanel(false)};
+$("scrim").onclick=function(){drawer(false);closePanel();dlPanel(false);revPanel(false)};
 $("search").oninput=paintIndex;
 $("dlist").addEventListener("click",function(e){
   var b=e.target.closest("[data-s]"); if(!b) return;
@@ -281,6 +283,7 @@ $("dlist").addEventListener("click",function(e){
 var curA=null, loopFrom=0, loopTo=0, rounds=0, dFrom=1, dTo=1;
 function openPanel(a){
   if($("dlPanel")) $("dlPanel").classList.remove("show");
+  if($("revPanel")) $("revPanel").classList.remove("show");
   curA=a; store.pos={s:curS,a:a}; save();
   $("pRef").textContent=SUR[curS-1].tr+" "+curS+":"+a;
   $("pGloss").textContent=(store.tl&&EN)?EN[String(curS)][a-1]:"";
@@ -431,62 +434,48 @@ $("nextAyah").onclick=function(){
 };
 
 /* ---------- recitation tracking ---------- */
-var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-var recog=null,listening=false,doneCount=0,utterConsumed=0,miss=0,lastScroll=0;
-if(!SR){ $("micBtn").disabled=true; $("micBtn").title="This browser has no speech recognition"; }
+/* The alignment and mistake detection live in tracker.js. This section is
+   only the plumbing: feed it what the recogniser heard, and turn what it
+   reports back into marks on the page. Replacing the recogniser with a
+   Whisper or CTC endpoint later means changing startMic and nothing else. */
 
-function lev(a,b){
-  if(a===b) return 0;
-  var m=a.length,n=b.length; if(!m) return n; if(!n) return m;
-  var prev=[],i,j;
-  for(j=0;j<=n;j++) prev[j]=j;
-  for(i=1;i<=m;i++){
-    var cu=[i];
-    for(j=1;j<=n;j++) cu[j]=Math.min(prev[j]+1,cu[j-1]+1,prev[j-1]+(a[i-1]===b[j-1]?0:1));
-    prev=cu;
-  }
-  return prev[n];
+var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+var recog=null,listening=false,doneCount=0,utterConsumed=0,lastScroll=0;
+var TRK=null, IDX=null, idleT=null;
+var mistakes=[];                       /* this session's findings */
+
+/* Two ways of hearing, and the tracker cannot tell them apart: both hand it
+   a list of words. The browser's recogniser is free and needs no download
+   but sends your voice to a vendor and returns no timing. The on-device
+   model is a deliberate download and gives a start and end time for every
+   letter, which is the only way madd length is measurable. */
+var CTC=window.SabaqCTC;
+var localOK=!!(CTC&&CTC.supported());
+var engine=(store.engine==="local"&&localOK)?"local":"speech";
+if(!SR&&localOK) engine="local";
+function engineAvailable(){ return engine==="local" ? localOK : !!SR; }
+if(!SR&&!localOK){
+  $("micBtn").disabled=true;
+  $("micBtn").title="This browser has neither speech recognition nor WebAssembly";
 }
-function near(a,b){
-  if(!a||!b) return false;
-  if(a===b) return true;
-  var L=Math.max(a.length,b.length),tol=L<=3?0:(L<=6?1:2);
-  if(Math.abs(a.length-b.length)>tol+1) return false;
-  return lev(a,b)<=tol;
-}
+
 function showStatus(txt,cls){
   $("status").className="status on"+(cls?" "+cls:"");
   $("where").textContent=txt;
 }
 function hideStatus(){ if(!listening&&!playing) $("status").className="status"; }
-function statusText(){
+function statusText(extra,cls){
   if(!listening) return;
-  var st=$("status");
-  if(miss>=6){ showStatus("Lost the thread — tap a word to pick up from there","lost"); return; }
-  st.className="status on";
+  if(extra){ showStatus(extra,cls||"lost"); return; }
   var e=SEQ[pos];
+  $("status").className="status on";
   if(!e){ $("where").textContent="End of "+SUR[curS-1].tr+" — choose the next surah"; return; }
   $("where").textContent="Following "+SUR[curS-1].tr+" "+curS+":"+e.a+
     (loopTo?" · loop "+loopFrom+(loopTo>loopFrom?"–"+loopTo:""):"")+
     " · word "+(pos-AS[e.a]+1)+" of "+(AE[e.a]-AS[e.a]+1);
 }
-function flashStatus(){miss=0;statusText()}
+function flashStatus(){ statusText(); }
 
-function advanceTo(target){
-  var from=pos;
-  for(var f=from;f<=target;f++) revealWord(f,true);
-  var startA=SEQ[from]?SEQ[from].a:SEQ[target].a, endA=SEQ[target].a, rewound=false;
-  for(var a=startA;a<=endA;a++) if(AE[a]<=target) bump(a,1);
-  if(loopTo&&target>=AE[loopTo]&&endA>=loopFrom){
-    rounds++;
-    for(var q=loopFrom;q<=loopTo;q++) clearAyahReveals(q);
-    pos=AS[loopFrom]; rewound=true; paintChip();
-    if(loopLimitReached()){ finishLoop(); return; }
-  }
-  if(!rewound) pos=target+1;
-  setNow(pos);
-  scrollTo_(Math.min(pos,SEQ.length-1));
-}
 function scrollTo_(f){
   var el=WEL[f]; if(!el) return;
   var now=Date.now(); if(now-lastScroll<450) return;
@@ -496,59 +485,366 @@ function scrollTo_(f){
     el.scrollIntoView({block:"center",behavior:"smooth"});
   }
 }
-function feed(h){
-  if(!h||pos>=SEQ.length) return;
-  for(var d=0;d<6&&pos+d<SEQ.length;d++){
-    if(near(h,SEQ[pos+d].n)){ advanceTo(pos+d); miss=0; return; }
+
+/* ---- turning findings into marks ---- */
+
+var KIND={
+  substitution:{label:"Wrong word",cls:"k-sub"},
+  omission:{label:"Words missed",cls:"k-omit"},
+  skipped_ayah:{label:"Ayah skipped",cls:"k-skip"},
+  drift:{label:"Slipped elsewhere",cls:"k-drift"},
+  hesitation:{label:"Hesitated",cls:"k-hesit"},
+  repeat:{label:"Repeated",cls:"k-rep"},
+  insertion:{label:"Extra word",cls:"k-rep"},
+  restart:{label:"Started again",cls:"k-rep"}
+};
+var COUNTED={substitution:1,omission:1,skipped_ayah:1,drift:1};
+
+function markWord(f,cls,letters){
+  var el=WEL[f]; if(!el) return;
+  el.classList.add(cls);
+  var aw=el.querySelector(".aw");
+  if(aw&&letters&&letters.length&&(cls==="miss"||cls==="soft")){
+    var raw=SEQ[f].raw||aw.textContent;
+    /* letters are indices into the normalised form; map them back by
+       walking the raw word and counting only letters that survive
+       normalisation, so diacritics do not shift the highlight */
+    var out="",li=0,set={};
+    for(var i=0;i<letters.length;i++) set[letters[i]]=1;
+    for(var c=0;c<raw.length;c++){
+      var ch=raw.charAt(c);
+      var isLetter=SabaqTracker.normalise(ch).length>0;
+      if(isLetter){
+        out+= set[li] ? '<i class="badletters">'+esc(ch)+'</i>' : esc(ch);
+        li++;
+      } else out+=esc(ch);
+    }
+    aw.innerHTML=out;
   }
-  miss++;
+  var ay=el.closest(".ayah"); if(ay) ay.classList.add("hasmiss");
 }
+
+function logMistake(ev){
+  var a=ev.ayah||1;
+  mistakes.push({s:curS,a:a,type:ev.type,expected:ev.expected||"",heard:ev.heard||"",
+                 word:ev.word,ayat:ev.ayat,to:ev.to,conf:ev.confidence||0,at:ev.at});
+  if(COUNTED[ev.type]){
+    var r=rec(curS,a)||{};
+    setRec(curS,a,{mk:(r.mk||0)+1});
+    updateAyahRow(a);
+  }
+  paintRevDot();
+}
+
+function onTrackEvent(ev){
+  switch(ev.type){
+    case "match":
+      revealWord(ev.word,true);
+      if(ev.word>=pos) pos=ev.word+1;
+      break;
+    case "substitution":
+      revealWord(ev.word,true);
+      markWord(ev.word,"miss",ev.letters);
+      if(ev.word>=pos) pos=ev.word+1;
+      logMistake(ev);
+      statusText("Said “"+ev.heard+"” for “"+ev.expected+"”","lost");
+      break;
+    case "omission":
+      for(var i=0;i<ev.words.length;i++) markWord(ev.words[i],"gap");
+      logMistake(ev);
+      statusText(ev.words.length+" word"+(ev.words.length===1?"":"s")+" missed","lost");
+      break;
+    case "skipped_ayah":
+      for(var f=ev.from;f<=ev.to;f++) markWord(f,"gap");
+      logMistake(ev);
+      statusText("Skipped "+curS+":"+ev.ayat.join(", "),"lost");
+      break;
+    case "drift":
+      logMistake(ev);
+      statusText("That is "+ev.to.surah+":"+ev.to.ayah+" — a similar passage","lost");
+      break;
+    case "restart":
+      statusText();
+      break;
+    case "repeat": case "insertion": case "hesitation":
+      logMistake(ev);
+      break;
+    case "lost":
+      statusText("Lost the thread — tap a word to pick up from there","lost");
+      break;
+  }
+}
+
+/* the loop range still governs where recitation goes next */
+function afterFeed(){
+  if(!TRK) return;
+  pos=TRK.position;
+  if(loopTo&&pos>AE[loopTo]){
+    rounds++; paintChip();
+    if(loopLimitReached()){ finishLoop(); return; }
+    for(var q=loopFrom;q<=loopTo;q++) clearAyahReveals(q);
+    pos=AS[loopFrom]; TRK.position=pos;
+  }
+  setNow(pos);
+  scrollTo_(Math.min(pos,SEQ.length-1));
+  statusText();
+}
+
+function makeTracker(){
+  TRK=SabaqTracker.create({
+    words:SEQ, ayahStart:AS, ayahEnd:AE, surah:curS,
+    index:IDX, onEvent:onTrackEvent
+  });
+  TRK.reset(pos||0);
+}
+
 function startMic(){
-  if(!SR||listening) return;
+  if(listening||!engineAvailable()) return;
   stopAudio();
   if(mask==="none") setMask("blur");
+
+  /* the drift index covers the whole mushaf, so build it once, lazily */
+  if(!IDX&&window.QAR){
+    showStatus("Preparing…","");
+    try{ IDX=SabaqTracker.buildIndex(window.QAR); }catch(e){ IDX=null; }
+  }
+
+  if(loopTo&&(pos<AS[loopFrom]||pos>AE[loopTo])) pos=AS[loopFrom];
+  else if(curA&&!loopTo) pos=AS[curA];
+  else if(!pos) pos=0;
+  makeTracker();
+
+  if(engine==="local") startLocal(); else startSpeech();
+}
+
+/* ---- the on-device model ---- */
+
+/* The engine is told, every window, which letters it should expect next.
+   Giving it the text turns an open-vocabulary guess into a constrained
+   one, and that is the whole reason the alignment is trustworthy. */
+function expectedPlan(){
+  if(!CTC||!CTC.meta()) return null;
+  var ids=[],words=[],start=pos,n=0;
+  for(var f=start;f<SEQ.length&&n<10;f++,n++){
+    var enc=CTC.encode(SEQ[f].raw);
+    if(!enc||!enc.length) continue;
+    if(ids.length) ids.push(CTC.meta().separator);
+    words.push({index:f,from:ids.length,to:ids.length+enc.length-1});
+    for(var k=0;k<enc.length;k++) ids.push(enc[k]);
+  }
+  return ids.length?{ids:ids,words:words}:null;
+}
+
+/* Letter detail only means something for a word the tracker has accepted.
+   Flagging letters in a word the reciter never reached would be inventing
+   mistakes out of silence, which is the one failure worth avoiding. */
+function onLetterDetail(details){
+  for(var i=0;i<details.length;i++){
+    var d=details[i];
+    if(d.word>=pos) continue;                 /* not yet passed — say nothing */
+    if(!d.weak.length||d.startMs===null) continue;
+    var el=WEL[d.word]; if(!el) continue;
+    var aw=el.querySelector(".aw"); if(!aw) continue;
+    if(aw.getAttribute("data-lt")) continue;  /* already judged */
+    aw.setAttribute("data-lt","1");
+    markWord(d.word,"soft",d.weak);
+  }
+}
+
+function startLocal(){
+  showStatus(CTC.loaded()?"Starting…":"Loading the model…","");
+  CTC.setExpected(expectedPlan);
+  CTC.start({
+    onProgress:function(got,total){
+      showStatus("Downloading the model — "+mb(got)+(total?" of "+mb(total):""),"");
+    },
+    onWords:function(ws){
+      if(!ws.length||!TRK) return;
+      TRK.feed(ws); afterFeed();
+    },
+    onDetail:onLetterDetail,
+    onError:function(msg){ showStatus(msg,"lost"); }
+  }).then(function(){
+    listening=true;
+    micLive();
+  }).catch(function(e){
+    showStatus(String(e.message||e),"lost");
+    stopMic(true);
+  });
+}
+
+function micLive(){
+  setNow(pos);
+  $("micBtn").classList.add("live");
+  $("micBtn").setAttribute("aria-label","Stop reciting");
+  statusText();
+  scrollTo_(pos);
+  clearInterval(idleT);
+  idleT=setInterval(function(){ if(TRK&&listening) TRK.idle(); },1500);
+}
+
+/* ---- the browser's recogniser ---- */
+
+function startSpeech(){
   recog=new SR();
   recog.lang="ar-SA"; recog.continuous=true; recog.interimResults=true;
-  doneCount=0; utterConsumed=0; miss=0;
+  doneCount=0; utterConsumed=0;
+
   recog.onresult=function(ev){
-    var dc=doneCount,uc=utterConsumed;
+    var dc=doneCount,uc=utterConsumed,batch=[];
     for(var r=dc;r<ev.results.length;r++){
-      var ws=ev.results[r][0].transcript.split(/\s+/).map(norm).filter(Boolean);
+      var ws=ev.results[r][0].transcript.split(/\s+/).filter(Boolean);
       var start=(r===dc)?uc:0;
-      for(var k=start;k<ws.length;k++) feed(ws[k]);
+      for(var k=start;k<ws.length;k++) batch.push(ws[k]);
       if(ev.results[r].isFinal){doneCount=r+1;utterConsumed=0;}
       else utterConsumed=ws.length;
     }
-    statusText();
+    if(batch.length&&TRK){ TRK.feed(batch); afterFeed(); }
   };
   recog.onerror=function(ev){
     if(ev.error==="not-allowed"||ev.error==="service-not-allowed"){
-      $("where").textContent="Microphone blocked — allow it for this page, then tap the mic again";
-      $("status").classList.add("lost");
+      showStatus("Microphone blocked — allow it for this page, then tap the mic again","lost");
       stopMic(true);
     }
   };
   recog.onend=function(){ if(listening){ try{recog.start()}catch(e){} } };
   try{recog.start()}catch(e){return}
   listening=true;
-  if(loopTo&&(pos<AS[loopFrom]||pos>AE[loopTo])) pos=AS[loopFrom];
-  else if(curA&&!loopTo) pos=AS[curA];
-  else if(!pos) pos=0;
-  setNow(pos);
-  $("micBtn").classList.add("live");
-  $("micBtn").setAttribute("aria-label","Stop reciting");
-  statusText();
-  scrollTo_(pos);
+  micLive();
 }
 function stopMic(keepMsg){
   listening=false;
+  clearInterval(idleT);
   $("micBtn").classList.remove("live");
   $("micBtn").setAttribute("aria-label","Recite to reveal");
   if(recog){try{recog.onend=null;recog.stop()}catch(e){} recog=null;}
+  if(CTC) CTC.stop();
   setNow(-1);
   if(!keepMsg) hideStatus();
 }
 $("micBtn").onclick=function(){listening?stopMic():startMic()};
+
+/* ---------- choosing how to listen ---------- */
+
+function paintEngine(){
+  var sel=$("engineSel"); if(!sel) return;
+  if(!CTC){ sel.parentNode.style.display="none"; return; }
+  sel.value=engine;
+  var opt=sel.options[1];
+  if(!localOK){ opt.disabled=true; opt.textContent="On-device model — not supported here"; }
+  if(!SR){ sel.options[0].disabled=true; sel.options[0].textContent="Browser speech recognition — not in this browser"; }
+
+  var note=$("engNote"), foot=$("engFoot");
+  if(engine!=="local"){
+    foot.style.display="none";
+    note.textContent=SR
+      ? "Words are recognised by the browser's own service, so this needs a network and returns no timing — mistakes are found by comparing words, not sound."
+      : "This browser has no speech recognition. Use the on-device model.";
+    return;
+  }
+  foot.style.display="";
+  CTC.modelBytes().then(function(b){
+    $("mdlGet").style.display=b?"none":"";
+    $("mdlDrop").style.display=b?"":"none";
+    note.textContent=b
+      ? "Saved on this device ("+mb(b)+"). Your voice never leaves the phone, and every letter is timed, so madd length is measured rather than guessed."
+      : "A one-off download of about 95 MB. After that it runs on the device with no network, and times every letter.";
+  });
+}
+
+if($("engineSel")) $("engineSel").onchange=function(){
+  engine=this.value; store.engine=engine; save();
+  if(listening) stopMic();
+  paintEngine();
+};
+if($("mdlGet")) $("mdlGet").onclick=function(){
+  var bar=$("mdlBar"), pr=$("mdlProg");
+  pr.classList.add("on"); bar.style.width="0%";
+  this.disabled=true;
+  CTC.download(function(got,total){
+    bar.style.width=(total?(got/total*100):0).toFixed(1)+"%";
+    $("engNote").textContent="Downloading — "+mb(got)+(total?" of "+mb(total):"");
+  }).then(function(){
+    pr.classList.remove("on"); $("mdlGet").disabled=false; paintEngine();
+  }).catch(function(e){
+    pr.classList.remove("on"); $("mdlGet").disabled=false;
+    $("engNote").textContent="Could not fetch the model: "+(e.message||e)+
+      " — check that web-model/ was copied in beside config.js.";
+  });
+};
+if($("mdlDrop")) $("mdlDrop").onclick=function(){
+  CTC.clearModel().then(paintEngine);
+};
+paintEngine();
+
+/* ---------- the review sheet ---------- */
+function paintRevDot(){
+  var n=mistakes.filter(function(m){return COUNTED[m.type]}).length;
+  var d=$("revDot");
+  d.textContent=n;
+  d.classList.toggle("on",n>0);
+}
+function revPanel(on){
+  if(on){ closePanel(); $("dlPanel").classList.remove("show"); paintReview(); }
+  $("revPanel").classList.toggle("show",on);
+  document.body.classList.toggle("docked",on);
+  if(innerWidth<1024) $("scrim").classList.toggle("show",on);
+}
+$("revOpen").onclick=function(){ revPanel(true) };
+$("revClose").onclick=function(){ revPanel(false) };
+$("revClear").onclick=function(){
+  mistakes=[]; paintRevDot(); paintReview();
+  $("ayat").querySelectorAll(".miss,.gap").forEach(function(e){e.classList.remove("miss","gap")});
+  $("ayat").querySelectorAll(".hasmiss").forEach(function(e){e.classList.remove("hasmiss")});
+};
+function paintReview(){
+  var counted=mistakes.filter(function(m){return COUNTED[m.type]});
+  var hes=mistakes.filter(function(m){return m.type==="hesitation"||m.type==="repeat"}).length;
+  $("revCount").textContent=counted.length?(counted.length+" to look at"):"nothing flagged";
+  var byAyah={};
+  counted.forEach(function(m){ byAyah[m.a]=(byAyah[m.a]||0)+1; });
+  var weakest=Object.keys(byAyah).sort(function(x,y){return byAyah[y]-byAyah[x]})[0];
+  $("revSum").innerHTML=
+    '<div class="revstat"><b>'+counted.length+'</b><span>Mistakes</span></div>'+
+    '<div class="revstat"><b>'+hes+'</b><span>Hesitations</span></div>'+
+    '<div class="revstat"><b>'+(weakest?(curS+":"+weakest):"—")+'</b><span>Weakest ayah</span></div>';
+
+  if(!mistakes.length){
+    $("revList").innerHTML='<div class="dlempty">Nothing flagged yet. Recite with the microphone on and anything that goes astray will be listed here.</div>';
+    return;
+  }
+  var out=[];
+  for(var i=mistakes.length-1;i>=0;i--){
+    var m=mistakes[i], k=KIND[m.type]||{label:m.type,cls:""};
+    var body="";
+    if(m.type==="substitution"){
+      body='<div class="rar">'+esc(SEQ[m.word]?(SEQ[m.word].raw||m.expected):m.expected)+'</div>'+
+           '<div class="rwas">you said “'+esc(m.heard)+'”</div>';
+    } else if(m.type==="omission"){
+      body='<div class="rar">'+esc(m.expected)+'</div><div class="rwas">missed</div>';
+    } else if(m.type==="skipped_ayah"){
+      body='<div class="rwas">ayah '+(m.ayat||[]).join(", ")+' not recited</div>';
+    } else if(m.type==="drift"){
+      body='<div class="rwas">matched '+m.to.surah+":"+m.to.ayah+' instead — “'+esc(m.heard)+'”</div>';
+    } else if(m.type==="repeat"||m.type==="insertion"){
+      body='<div class="rwas">“'+esc(m.heard)+'”</div>';
+    } else if(m.type==="hesitation"){
+      body='<div class="rwas">paused here</div>';
+    }
+    out.push('<div class="revrow" data-a="'+m.a+'">'+
+      '<div class="rh"><span class="rref">'+m.s+':'+m.a+'</span>'+
+      '<span class="rkind '+k.cls+'">'+k.label+'</span>'+
+      '<span class="rgo">Go ›</span></div>'+body+'</div>');
+  }
+  $("revList").innerHTML=out.join("");
+}
+$("revList").addEventListener("click",function(e){
+  var r=e.target.closest("[data-a]"); if(!r) return;
+  revPanel(false);
+  var el=$("ayat").querySelector('.ayah[data-a="'+r.dataset.a+'"]');
+  if(el) el.scrollIntoView({block:"center",behavior:"smooth"});
+});
+paintRevDot();
 
 /* ---------- recitation audio ---------- */
 var CFG=window.SABAQ_CONFIG||{sources:{},reciters:[]};
@@ -933,7 +1229,7 @@ function dlPanel(on){
   if(innerWidth<1024) $("scrim").classList.toggle("show",on);
   if(on){ paintDownloads(); paintOfflineNote(); }
 }
-$("dlOpen").onclick=function(){ dlPanel(true) };
+$("dlOpen").onclick=function(){ dlPanel(true); paintEngine(); };
 $("dlClose").onclick=function(){ dlPanel(false) };
 
 fillReciters(); paintAudioBtns(); paintDownloads(); paintOfflineNote();

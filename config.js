@@ -12,6 +12,19 @@
 
 window.SABAQ_CONFIG = {
 
+  /* The on-device recitation model. `model` and `meta` are the two files the
+     Colab notebook writes into web-model/ — copy that folder in beside this
+     file. `ort` and `wasm` point at the ONNX runtime; pin a version you have
+     tested, or vendor the files onto your own domain and point at those, which
+     also makes the engine work with no network at all. */
+  ctc: {
+    model: "web-model/model.int8.onnx",
+    meta:  "web-model/model.json",
+    ort:   "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js",
+    wasm:  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/"
+  },
+
+
   /* Which source to use by default: a key from `sources` below. */
   defaultSource: "everyayah",
 
