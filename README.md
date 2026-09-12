@@ -40,6 +40,25 @@ cd sabaq-mushaf && python3 -m http.server 8000
 # then open http://localhost:8000
 ```
 
+## Controls
+
+**Top bar** — the list icon on the left opens all surahs; swiping right anywhere
+in the mushaf does the same. The gear on the right opens Ayah tools for whatever
+ayah you are on. Translation, transliteration and word-by-word live in the
+display menu; the download icon opens audio and offline storage.
+
+**Bottom dock** — concealment on the upper row; below it play, the repetition
+counter, and the microphone.
+
+**The counter** shows repetitions of the current ayah against your target.
+It counts up on its own while audio plays, and you can tap it to count a
+repetition while reciting from memory. **Hold it for a moment to reset to
+zero.** The target itself is set in Ayah tools.
+
+**Loops** run over any range of ayat, and *Stop after* sets how many times
+round — pick 3, 5, 7 or 10 and it stops by itself when the count is met,
+rather than looping indefinitely. Leave it on ∞ to loop until you stop it.
+
 ---
 
 ## Choosing reciters — `config.js`

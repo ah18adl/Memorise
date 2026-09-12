@@ -7,7 +7,7 @@ var $=function(id){return document.getElementById(id)};
 
 /* ---------- persistence ---------- */
 var LS="sabaq.v1";
-var store={pos:{s:1,a:1},tl:false,tr:false,wb:true,wbSet:false,theme:"",prog:{},target:5,mask:"none",reciter:"husary",source:"everyayah",saved:{},arep:1,aspd:1,at:0};
+var store={pos:{s:1,a:1},tl:false,tr:false,wb:true,wbSet:false,theme:"",prog:{},target:5,mask:"none",reciter:"husary",source:"everyayah",saved:{},arep:1,aspd:1,loopRounds:0,at:0};
 try{var raw=localStorage.getItem(LS); if(raw) store=Object.assign(store,JSON.parse(raw));}catch(e){}
 if(!store.wbSet) store.wb=true;   /* on by default until the reader chooses otherwise */
 var db=null,saveT=null;
@@ -173,6 +173,7 @@ function goSurah(n,a){
   stopMic();
   curS=n; stopAudio(); clearLoop(); store.pos={s:n,a:a||1}; save();
   if(typeof paintOfflineNote==="function") paintOfflineNote();
+  if(typeof paintCounter==="function") paintCounter();
   paintSurah(); paintIndex();
   pos=AS[a||1]||0;
   if(a){var el=$("ayat").querySelector('.ayah[data-a="'+a+'"]'); if(el) el.scrollIntoView({block:"center"});}
@@ -288,7 +289,7 @@ function openPanel(a){
   var el=$("ayat").querySelector('.ayah[data-a="'+a+'"]');
   if(el){el.classList.add("active");el.scrollIntoView({block:"nearest"});}
   if(loopTo){dFrom=loopFrom;dTo=loopTo;} else {dFrom=a;dTo=a;}
-  paintReps(); paintStates(); paintLoopBtn();
+  paintReps(); paintStates(); paintLoopBtn(); paintLoopRounds(); paintCounter();
   $("panel").classList.add("show");
   document.body.classList.add("docked");
   if(innerWidth<1024) $("scrim").classList.add("show");
@@ -349,8 +350,28 @@ function paintChip(){
   c.classList.toggle("on",!!loopTo);
   if(!loopTo) return;
   $("chipRange").textContent=curS+":"+loopLabel();
-  $("chipRounds").textContent=rounds?("round "+(rounds+1)):((loopTo-loopFrom+1)+" ay\u0101t");
+  var lim=store.loopRounds||0;
+  $("chipRounds").textContent = lim
+    ? ("round "+Math.min(rounds+1,lim)+" of "+lim)
+    : (rounds?("round "+(rounds+1)):((loopTo-loopFrom+1)+" ay\u0101t"));
 }
+function loopLimitReached(){ return (store.loopRounds||0)>0 && rounds>=store.loopRounds }
+function finishLoop(){
+  var done=rounds, where=curS+":"+loopLabel();
+  stopAudio(); stopMic();
+  rounds=0; paintChip(); paintCounter();
+  showStatus("Finished "+done+" round"+(done===1?"":"s")+" of "+where,"done");
+  setTimeout(function(){ if(!playing&&!listening) hideStatus(); },7000);
+}
+function paintLoopRounds(){
+  [].forEach.call($("loopRounds").children,function(b){
+    b.classList.toggle("on",+b.dataset.r===(store.loopRounds||0));
+  });
+}
+$("loopRounds").addEventListener("click",function(e){
+  var b=e.target.closest("button[data-r]"); if(!b) return;
+  store.loopRounds=+b.dataset.r; save(); paintLoopRounds(); paintChip();
+});
 function setLoop(f,t){
   var n=SUR[curS-1].count;
   loopFrom=Math.max(1,Math.min(f,t)); loopTo=Math.min(n,Math.max(f,t));
@@ -368,12 +389,13 @@ function bump(a,by){
   if(by>0&&!stateOf(curS,a)) setRec(curS,a,{st:1});
   updateAyahRow(a);
   if(curA===a){paintReps();paintStates();}
+  paintCounter();
 }
 $("repAdd").onclick=function(){bump(curA,1)};
 $("repUndo").onclick=function(){bump(curA,-1)};
 $("tgt").addEventListener("click",function(e){
   var b=e.target.closest("button[data-t]"); if(!b) return;
-  store.target=+b.dataset.t; save(); paintReps();
+  store.target=+b.dataset.t; save(); paintReps(); paintCounter();
 });
 $("states").addEventListener("click",function(e){
   var b=e.target.closest("button[data-s]"); if(!b) return;
@@ -459,6 +481,7 @@ function advanceTo(target){
     rounds++;
     for(var q=loopFrom;q<=loopTo;q++) clearAyahReveals(q);
     pos=AS[loopFrom]; rewound=true; paintChip();
+    if(loopLimitReached()){ finishLoop(); return; }
   }
   if(!rewound) pos=target+1;
   setNow(pos);
@@ -811,7 +834,7 @@ function playAyah(a,left){
   if(!url){ audioFailed("This reciter is not available on the selected source."); return; }
   var tok=++playToken;
   playA=a; playLeft=left||store.arep||1;
-  playing=true; setPlayIcon(true); markPlaying(a);
+  playing=true; setPlayIcon(true); markPlaying(a); paintCounter();
   showStatus("Playing "+curS+":"+a+" · "+reciterName(),"audio");
   resolveSrc(url).then(function(src){
     if(tok!==playToken||!playing) return;
@@ -839,7 +862,11 @@ audio.addEventListener("ended",function(){
   if(playLeft>1){ playLeft--; audio.currentTime=0; audio.play(); return; }
   var last=loopTo?loopTo:SUR[curS-1].count;
   if(playA>=last){
-    if(loopTo){ rounds++; paintChip(); playAyah(loopFrom,store.arep||1); return; }
+    if(loopTo){
+      rounds++; paintChip();
+      if(loopLimitReached()){ finishLoop(); return; }
+      playAyah(loopFrom,store.arep||1); return;
+    }
     stopAudio(); return;
   }
   playAyah(playA+1,store.arep||1);
@@ -848,7 +875,7 @@ function stopAudio(){
   playing=false;
   try{ audio.pause(); }catch(e){}
   releaseBlob();
-  setPlayIcon(false); markPlaying(0); hideStatus();
+  setPlayIcon(false); markPlaying(0); hideStatus(); paintCounter();
 }
 $("playBtn").onclick=function(){
   if(playing){ stopAudio(); return; }
@@ -857,6 +884,46 @@ $("playBtn").onclick=function(){
 };
 $("playOne").onclick=function(){ stopAudio(); playAyah(curA,1); };
 $("playFrom").onclick=function(){ stopAudio(); playAyah(curA,store.arep||1); };
+
+/* ---------- repetition counter ---------- */
+function focusAyah(){
+  if(playing&&playA) return playA;
+  if(curA) return curA;
+  if(SEQ[pos]) return SEQ[pos].a;
+  return 1;
+}
+function paintCounter(){
+  var a=focusAyah(), n=repsOf(curS,a), t=store.target||5;
+  $("cnNow").textContent=n;
+  $("cnTarget").textContent=t;
+  $("cnLabel").textContent=curS+":"+a;
+  $("cnFill").style.width=Math.min(100,t?(n/t*100):0)+"%";
+  $("counter").classList.toggle("done",t>0&&n>=t);
+}
+(function(){
+  var el=$("counter"), holdT=null, held=false;
+  function startHold(){
+    held=false;
+    el.classList.add("holding");
+    $("cnFill").style.width="100%";
+    holdT=setTimeout(function(){
+      held=true; el.classList.remove("holding");
+      var a=focusAyah();
+      setRec(curS,a,{rp:0});
+      updateAyahRow(a); paintCounter();
+      if(curA===a) paintReps();
+    },700);
+  }
+  function endHold(){ clearTimeout(holdT); el.classList.remove("holding"); if(!held) paintCounter(); }
+  el.addEventListener("pointerdown",function(e){ e.preventDefault(); startHold(); });
+  el.addEventListener("pointerup",function(){
+    endHold();
+    if(held){ held=false; paintCounter(); return; }
+    bump(focusAyah(),1); paintCounter();
+  });
+  el.addEventListener("pointercancel",endHold);
+  el.addEventListener("pointerleave",endHold);
+})();
 
 /* ---------- downloads panel ---------- */
 function dlPanel(on){
@@ -870,6 +937,41 @@ $("dlOpen").onclick=function(){ dlPanel(true) };
 $("dlClose").onclick=function(){ dlPanel(false) };
 
 fillReciters(); paintAudioBtns(); paintDownloads(); paintOfflineNote();
+
+/* ---------- display menu ---------- */
+$("dispBtn").onclick=function(e){
+  e.stopPropagation();
+  var m=$("dispMenu"), on=!m.classList.contains("show");
+  m.classList.toggle("show",on);
+  $("dispBtn").setAttribute("aria-expanded",on?"true":"false");
+};
+document.addEventListener("click",function(e){
+  if(!e.target.closest(".menuwrap")) $("dispMenu").classList.remove("show");
+});
+
+/* ---------- navigation ---------- */
+$("toIndex").onclick=function(){ drawer(true) };
+$("toTools").onclick=function(){ openPanel(focusAyah()) };
+
+/* swipe right anywhere in the mushaf goes back to the surah list */
+(function(){
+  var x0=0,y0=0,t0=0,live=false;
+  document.addEventListener("touchstart",function(e){
+    if(e.touches.length!==1){ live=false; return; }
+    if(e.target.closest(".drawer,.panel,.dock,.seg,.mini,.step")){ live=false; return; }
+    var t=e.touches[0]; x0=t.clientX; y0=t.clientY; t0=Date.now(); live=true;
+  },{passive:true});
+  document.addEventListener("touchend",function(e){
+    if(!live) return; live=false;
+    var t=e.changedTouches[0], dx=t.clientX-x0, dy=t.clientY-y0;
+    if(Date.now()-t0>700) return;
+    if(Math.abs(dx)<70||Math.abs(dx)<Math.abs(dy)*1.6) return;
+    if(document.querySelector(".panel.show")) return;
+    if(dx>0) drawer(true); else drawer(false);
+  },{passive:true});
+})();
+
+paintLoopRounds(); paintCounter();
 
 /* ---------- keys ---------- */
 document.addEventListener("keydown",function(e){
