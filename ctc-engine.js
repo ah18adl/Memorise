@@ -25,7 +25,16 @@ window.SabaqCTC = (function () {
   "use strict";
 
   var C = (window.SABAQ_CONFIG && window.SABAQ_CONFIG.ctc) || {};
-  var MODEL_URL = C.model || "web-model/model.int8.onnx";
+  /* The model may be one file or a list of parts. Parts exist because the
+     best free static hosts cap a single file well below 95 MB — Cloudflare
+     Pages at 25 MiB — and splitting it is far better than sending the app
+     to a second host for one file. Either form works; a plain string is
+     simply a list of one. */
+  var MODEL_PARTS = (function () {
+    var m = C.model || "web-model/model.int8.onnx";
+    return (typeof m === "string") ? [m] : m.slice();
+  })();
+  var MODEL_URL = MODEL_PARTS[0];
   var META_URL = C.meta || "web-model/model.json";
   var ORT_URL = C.ort || "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/ort.min.js";
   var WASM_BASE = C.wasm || "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.2/dist/";
@@ -65,51 +74,92 @@ window.SabaqCTC = (function () {
     return (window.caches ? caches.open(CACHE) : Promise.reject(new Error("no Cache Storage")));
   }
 
-  function cachedModel() {
-    return cacheOpen().then(function (c) { return c.match(MODEL_URL); }).catch(function () { return null; });
+  /* every part, in order, or null if any one of them is missing */
+  function cachedParts() {
+    return cacheOpen().then(function (c) {
+      return Promise.all(MODEL_PARTS.map(function (u) { return c.match(u); }));
+    }).then(function (rs) {
+      for (var i = 0; i < rs.length; i++) if (!rs[i]) return null;
+      return rs;
+    }).catch(function () { return null; });
   }
 
   function modelPresent() {
-    return cachedModel().then(function (r) { return !!r; });
+    return cachedParts().then(function (rs) { return !!rs; });
   }
 
+  /* what is on disk right now, whether or not it is complete — so a part-way
+     download reports honestly instead of claiming nothing is saved */
   function modelBytes() {
-    return cachedModel().then(function (r) {
-      if (!r) return 0;
-      return r.clone().arrayBuffer().then(function (b) { return b.byteLength; });
+    return cacheOpen().then(function (c) {
+      return Promise.all(MODEL_PARTS.map(function (u) {
+        return c.match(u).then(function (r) {
+          return r ? r.clone().arrayBuffer().then(function (b) { return b.byteLength; }) : 0;
+        });
+      }));
+    }).then(function (ns) {
+      var t = 0, i;
+      for (i = 0; i < ns.length; i++) t += ns[i];
+      return t;
     }).catch(function () { return 0; });
   }
 
-  /* Downloads with progress. A silent 95 MB fetch behind a spinner is the
-     kind of wait people cancel, so the byte count is surfaced. */
+  /* Downloads with progress, part by part, skipping anything already
+     saved — so a download interrupted at part 3 of 5 resumes there rather
+     than starting the 95 MB again. Progress is reported in bytes when the
+     total is not yet known, because a fake percentage is worse than none. */
   function download(onProgress) {
     state = "downloading";
+    var total = +(C.modelSize || 0);          /* optional hint from config.js */
+    var done = 0;
+
     return cacheOpen().then(function (c) {
-      return c.match(MODEL_URL).then(function (hit) {
-        if (hit) return true;
-        return fetch(MODEL_URL).then(function (res) {
-          if (!res.ok) throw new Error("model not found at " + MODEL_URL + " (" + res.status + ")");
-          var total = +(res.headers.get("content-length") || 0);
-          if (!res.body || !res.body.getReader || !onProgress) {
-            return c.put(MODEL_URL, res.clone()).then(function () { return true; });
-          }
-          var reader = res.body.getReader(), chunks = [], got = 0;
-          return (function pump() {
-            return reader.read().then(function (r) {
-              if (r.done) return;
-              chunks.push(r.value); got += r.value.length;
-              onProgress(got, total);
-              return pump();
+      var chain = Promise.resolve();
+      MODEL_PARTS.forEach(function (url, i) {
+        chain = chain.then(function () {
+          return c.match(url).then(function (hit) {
+            if (hit) {
+              /* already saved — counts toward the total so the bar reflects
+                 a resumed download instead of appearing to start from zero */
+              return hit.clone().arrayBuffer().then(function (b) {
+                done += b.byteLength;
+                if (onProgress) onProgress(done, total, i + 1, MODEL_PARTS.length);
+              });
+            }
+            return fetch(url).then(function (res) {
+              if (!res.ok) {
+                throw new Error("model part " + (i + 1) + " of " + MODEL_PARTS.length +
+                                " not found at " + url + " (" + res.status + ")");
+              }
+              var len = +(res.headers.get("content-length") || 0);
+              /* No guessing the total from one part: every part is equal
+                 except the last, so multiplying overstates it and the bar
+                 stops short of 100%. Either config.js states modelSize —
+                 split_model.py prints it — or progress is shown in bytes. */
+              if (!res.body || !res.body.getReader || !onProgress) {
+                return c.put(url, res.clone()).then(function () { done += len; });
+              }
+              var reader = res.body.getReader(), chunks = [], got = 0;
+              return (function pump() {
+                return reader.read().then(function (r) {
+                  if (r.done) return;
+                  chunks.push(r.value); got += r.value.length;
+                  onProgress(done + got, total, i + 1, MODEL_PARTS.length);
+                  return pump();
+                });
+              })().then(function () {
+                var blob = new Blob(chunks, { type: "application/octet-stream" });
+                return c.put(url, new Response(blob, {
+                  headers: { "content-type": "application/octet-stream",
+                             "content-length": String(got) }
+                }));
+              }).then(function () { done += got; });
             });
-          })().then(function () {
-            var blob = new Blob(chunks, { type: "application/octet-stream" });
-            return c.put(MODEL_URL, new Response(blob, {
-              headers: { "content-type": "application/octet-stream", "content-length": String(got) }
-            }));
-          }).then(function () { return true; });
+          });
         });
       });
-    }).then(function (ok) { state = "idle"; return ok; })
+      return chain;
+    }).then(function () { state = "idle"; return true; })
       .catch(function (e) { state = "error"; lastErr = String(e.message || e); throw e; });
   }
 
@@ -136,9 +186,22 @@ window.SabaqCTC = (function () {
         if (meta.blank === undefined || meta.blank === null) meta.blank = j.vocab["<pad>"] || 0;
         if (meta.separator === undefined || meta.separator === null) meta.separator = j.vocab["|"];
         if (!meta.msPerFrame) meta.msPerFrame = 20;
-        return cachedModel();
+        return cachedParts();
       })
-      .then(function (res) { return res.arrayBuffer(); })
+      /* the parts are joined back into the single buffer the runtime wants;
+         they only ever existed to get past a host's per-file limit */
+      .then(function (rs) {
+        if (!rs) throw new Error("the model is not fully downloaded");
+        return Promise.all(rs.map(function (r) { return r.arrayBuffer(); }));
+      })
+      .then(function (bufs) {
+        if (bufs.length === 1) return bufs[0];
+        var total = 0, i;
+        for (i = 0; i < bufs.length; i++) total += bufs[i].byteLength;
+        var out = new Uint8Array(total), at = 0;
+        for (i = 0; i < bufs.length; i++) { out.set(new Uint8Array(bufs[i]), at); at += bufs[i].byteLength; }
+        return out.buffer;
+      })
       .then(function (bytes) {
         return new Promise(function (resolve, reject) {
           worker = new Worker("ctc-worker.js");

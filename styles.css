@@ -38,6 +38,18 @@
 
   --brass:#8A6A24;
   --live:#A33322;
+
+  /* tajwīd. Distinct enough to tell apart at reading size, muted enough
+     that a fully coloured page still looks like a mushaf and not a chart. */
+  --tj-ghunnah:#2F7A4F;
+  --tj-idgham:#1F6E86;
+  --tj-ikhfa:#7A4B94;
+  --tj-iqlab:#2E5BA8;
+  --tj-qalqalah:#A85D12;
+  --tj-madd6:#A8271C;
+  --tj-madd4:#C2761A;
+  --tj-madd2:#7E7666;
+  --tj-silent:#A9A294;
   --sabaq:#9C5F1B;
   --sabqi:#1F6670;
   --manzil:#33694A;
@@ -66,6 +78,9 @@
     --rule:#2E2B27; --rule-soft:#242220;
     --accent:#EDE7DA; --accent-2:#FFFDF6; --accent-soft:#2B2823; --on-accent:#141311;
     --brass:#C79E51; --live:#E07A63;
+  --tj-ghunnah:#6FBE8C; --tj-idgham:#63B6CE; --tj-ikhfa:#BC9AD6;
+  --tj-iqlab:#8FAEE8; --tj-qalqalah:#E0A05C; --tj-madd6:#F08A7C;
+  --tj-madd4:#E8B06A; --tj-madd2:#8E8676; --tj-silent:#6A6458;
     --sabaq:#D2954F; --sabqi:#63B3BD; --manzil:#6FB489;
     --shadow:0 1px 2px rgba(0,0,0,.5), 0 8px 26px -16px rgba(0,0,0,.9);
     --lift:0 2px 8px rgba(0,0,0,.6), 0 22px 50px -24px rgba(0,0,0,1);
@@ -78,6 +93,9 @@
   --rule:#2E2B27; --rule-soft:#242220;
   --accent:#EDE7DA; --accent-2:#FFFDF6; --accent-soft:#2B2823; --on-accent:#141311;
   --brass:#C79E51; --live:#E07A63;
+  --tj-ghunnah:#6FBE8C; --tj-idgham:#63B6CE; --tj-ikhfa:#BC9AD6;
+  --tj-iqlab:#8FAEE8; --tj-qalqalah:#E0A05C; --tj-madd6:#F08A7C;
+  --tj-madd4:#E8B06A; --tj-madd2:#8E8676; --tj-silent:#6A6458;
   --sabaq:#D2954F; --sabqi:#63B3BD; --manzil:#6FB489;
   --shadow:0 1px 2px rgba(0,0,0,.5), 0 8px 26px -16px rgba(0,0,0,.9);
   --lift:0 2px 8px rgba(0,0,0,.6), 0 22px 50px -24px rgba(0,0,0,1);
@@ -408,10 +426,18 @@ main{min-width:0;max-width:720px;margin:0 auto;
   transition:transform .26s cubic-bezier(.32,.72,0,1);
   display:flex;flex-direction:column;max-height:min(86vh,860px)}
 .panel.show{transform:none}
-.grab{width:40px;height:4px;border-radius:2px;background:var(--rule);margin:var(--s2) auto 0;flex:none}
+.grab{width:44px;height:5px;border-radius:3px;background:var(--rule);margin:10px auto 2px;flex:none;
+  cursor:grab}
+.grab::before{content:"";position:absolute;left:0;right:0;top:0;height:44px}
 .phead{padding:var(--s3) var(--s4);display:flex;align-items:center;gap:var(--s3);
   border-bottom:1px solid var(--rule-soft);flex:none}
-.phead .ttl{font-family:var(--serif);font-size:19px;font-weight:400}
+/* the title takes the room, so the close button is pinned to the far
+   right rather than sitting against the surah name */
+.phead .ttl{font-family:var(--serif);font-size:19px;font-weight:400;
+  margin-right:auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* the whole top of a sheet is the drag handle, so it must not select */
+.grab,.phead{-webkit-user-select:none;user-select:none;touch-action:none}
+.panel.dragging{transition:none}
 .phead .ttl em{font-style:normal;color:var(--muted);font-family:var(--mono);
   font-size:11.5px;margin-left:var(--s2)}
 .pbody{overflow-y:auto;-webkit-overflow-scrolling:touch;
@@ -601,3 +627,36 @@ main{min-width:0;max-width:720px;margin:0 auto;
 @media (prefers-reduced-motion:reduce){
   *{animation-duration:.01ms!important;transition-duration:.01ms!important}
 }
+
+
+/* ================= tajwīd ================= */
+/* The colour rides on the letters themselves — no background, no box, so
+   the page still reads as a mushaf rather than a highlighted textbook. */
+.tj{font-style:normal;font-weight:inherit}
+.tj-ghunnah{color:var(--tj-ghunnah)}
+.tj-idgham{color:var(--tj-idgham)}
+.tj-ikhfa{color:var(--tj-ikhfa)}
+.tj-iqlab{color:var(--tj-iqlab)}
+.tj-qalqalah{color:var(--tj-qalqalah)}
+.tj-madd6{color:var(--tj-madd6)}
+.tj-madd4{color:var(--tj-madd4)}
+.tj-madd2{color:var(--tj-madd2)}
+.tj-silent{color:var(--tj-silent);opacity:.75}
+
+.tajkey{display:flex;flex-wrap:wrap;gap:var(--s2) var(--s4);font-size:11px;
+  padding-bottom:var(--s1)}
+.tajkey .tj{display:inline-flex;align-items:center;gap:var(--s1);cursor:help}
+.tajkey .tj::before{content:"";width:7px;height:7px;border-radius:50%;
+  background:currentColor;flex:none}
+
+/* a mistake mark must win over tajwīd colour — being told the word was
+   wrong matters more than being told how to pronounce it */
+.w.miss .tj,.w.gap .tj{color:inherit}
+
+/* Concealment hides a word by making it transparent, and a tajwīd colour
+   set on the letters inside would override that and leave the word legible
+   — which defeats the entire point of the mode. The colour has to stand
+   down while a word is concealed. */
+.ayat.m-hide .w:not(.got) .tj,
+.ayat.m-tip .w:not(.got) .tj,
+.ayat.m-blur .w:not(.got) .tj{color:inherit}

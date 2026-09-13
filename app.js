@@ -7,9 +7,13 @@ var $=function(id){return document.getElementById(id)};
 
 /* ---------- persistence ---------- */
 var LS="sabaq.v1";
-var store={pos:{s:1,a:1},tl:false,tr:false,wb:true,wbSet:false,theme:"",prog:{},target:5,mask:"none",reciter:"husary",source:"everyayah",saved:{},arep:1,aspd:1,loopRounds:0,at:0};
+var store={pos:{s:1,a:1},tl:true,tlSet:false,tr:false,wb:true,wbSet:false,theme:"",prog:{},target:5,mask:"none",reciter:"husary",source:"everyayah",saved:{},arep:1,aspd:1,loopRounds:0,at:0};
 try{var raw=localStorage.getItem(LS); if(raw) store=Object.assign(store,JSON.parse(raw));}catch(e){}
-if(!store.wbSet) store.wb=true;   /* on by default until the reader chooses otherwise */
+/* Translation and word-by-word are on until the reader turns them off.
+   Someone opening a hifz app for the first time wants to see what the
+   words mean; making them find two toggles first is a worse first run. */
+if(!store.wbSet) store.wb=true;
+if(!store.tlSet) store.tl=true;
 var db=null,saveT=null;
 function save(){
   store.at=Date.now();
@@ -40,7 +44,7 @@ setTimeout(function(){connectDb(4)},400);
 /* ---------- text helpers ---------- */
 function pad(n){return n<10?"0"+n:""+n}
 function arDigits(n){return String(n).replace(/\d/g,function(d){return String.fromCharCode(0x660+ +d)})}
-var BUILD="2026-09-13c";
+var BUILD="2026-09-14a";
 
 /* A half-updated app is the worst failure mode there is: nothing throws, a
    few things quietly do not work, and the cause is invisible. So the two
@@ -135,6 +139,7 @@ function paintSurah(){
     '<div class="row1"><div><h1>'+s.tr+'</h1><div class="sub">'+s.en+'</div></div>'+
     '<div class="ar">'+s.ar+'</div></div>'+
     '<div class="meter">'+meterHTML(s.n)+'</div>'+
+    (store.tj&&window.SabaqTajweed?tajLegend():"")+
     '<div class="legend"><span><i class="dot s1"></i>Sabaq</span><span><i class="dot s2"></i>Sabqī</span>'+
     '<span><i class="dot s3"></i>Manzil</span>'+
     '<span style="margin-left:auto"><b class="mono" style="color:var(--ink)">'+worked(s.n)+'</b>&nbsp;of '+s.count+' worked</span></div>'+
@@ -152,12 +157,15 @@ function paintSurah(){
   for(var i=0;i<ar.length;i++){
     var v=i+1,st=stateOf(curS,v),rp=repsOf(curS,v);
     var ws=splitWords(ar[i]),wh="";
+    /* one pass per ayah, because the nūn rules look at the letter after —
+       which is often the first letter of the NEXT word */
+    var tj=(store.tj&&window.SabaqTajweed)?SabaqTajweed.markAyah(ws,esc):null;
     var gl=(store.wb&&WB&&WB[String(curS)])?WB[String(curS)][i]:null;
     AS[v]=f;
     for(var j=0;j<ws.length;j++){
       SEQ.push({a:v,n:norm(ws[j]),raw:ws[j]});
       wh+='<span class="w" data-f="'+f+'">'+
-          '<i class="aw" data-h="'+esc(head(ws[j]))+'">'+esc(ws[j])+'</i>'+
+          '<i class="aw" data-h="'+esc(head(ws[j]))+'">'+(tj?tj[j]:esc(ws[j]))+'</i>'+
           (gl?'<i class="gl">'+esc(gl[j]||"")+'</i>':'')+
         '</span> ';
       f++;
@@ -279,9 +287,21 @@ function bindToggle(id,flag,get,label,setKey){
     save(); sync(); paintSurah();
   };
 }
-bindToggle("tgTl","tl",function(){return EN},"Translation");
+bindToggle("tgTl","tl",function(){return EN},"Translation","tlSet");
 bindToggle("tgTr","tr",function(){return TR},"Transliteration");
 bindToggle("tgWb","wb",function(){return WB},"Word-by-word","wbSet");
+bindToggle("tgTj","tj",function(){return window.SabaqTajweed},"Tajwīd colouring");
+
+/* Colour with no key teaches nothing, so the rules in play are named
+   wherever the colouring is on. */
+function tajLegend(){
+  var r=SabaqTajweed.rules, out='<div class="tajkey">';
+  for(var i=0;i<r.length;i++){
+    if(r[i].id==="madd2") continue;           /* not coloured by default */
+    out+='<span class="tj tj-'+r[i].id+'" title="'+esc(r[i].hint)+'">'+esc(r[i].label)+'</span>';
+  }
+  return out+'</div>';
+}
 
 /* ---------- surah index ---------- */
 function paintIndex(){
@@ -797,12 +817,20 @@ function paintEngine(){
     return;
   }
   foot.style.display="";
-  CTC.modelBytes().then(function(b){
-    $("mdlGet").style.display=b?"none":"";
-    $("mdlDrop").style.display=b?"":"none";
-    note.textContent=b
+  /* State comes from whether the model is actually complete, not from
+     whether any bytes exist — a half-finished download must offer to
+     finish, and a finished one must not offer to start again. */
+  Promise.all([CTC.modelPresent(),CTC.modelBytes()]).then(function(r){
+    var have=r[0], b=r[1];
+    var busy=CTC.state()==="downloading";
+    $("mdlGet").style.display=(have||busy)?"none":"";
+    $("mdlGet").textContent=b&&!have?"Resume the download":"Download the model";
+    $("mdlDrop").style.display=have?"":"none";
+    note.textContent=have
       ? "Saved on this device ("+mb(b)+"). Your voice never leaves the phone, and every letter is timed, so madd length is measured rather than guessed."
-      : (lastModelError
+      : b ? "Partly downloaded ("+mb(b)+" so far) — resuming picks up where it stopped."
+      : (busy ? "Downloading now — you can keep reading."
+        : lastModelError
           ? "The model could not be fetched: "+lastModelError+" — check that web-model/ was uploaded beside config.js."
           : "A one-off download of about 95 MB. It starts by itself on wi-fi; until it finishes, listening falls back to the browser's recogniser.");
   });
@@ -817,9 +845,10 @@ if($("mdlGet")) $("mdlGet").onclick=function(){
   var bar=$("mdlBar"), pr=$("mdlProg");
   pr.classList.add("on"); bar.style.width="0%";
   this.disabled=true;
-  CTC.download(function(got,total){
+  CTC.download(function(got,total,part,parts){
     bar.style.width=(total?(got/total*100):0).toFixed(1)+"%";
-    $("engNote").textContent="Downloading — "+mb(got)+(total?" of "+mb(total):"");
+    $("engNote").textContent="Downloading — "+mb(got)+(total?" of "+mb(total):"")+
+      (parts>1?"  (part "+part+" of "+parts+")":"");
   }).then(function(){
     pr.classList.remove("on"); $("mdlGet").disabled=false; paintEngine();
   }).catch(function(e){
@@ -857,8 +886,9 @@ function autoFetchModel(){
       return;
     }
     showStatus("Preparing the recitation model — you can keep reading","");
-    CTC.download(function(got,total){
-      showStatus("Recitation model "+(total?Math.round(got/total*100)+"%":mb(got))+" — you can keep reading","");
+    CTC.download(function(got,total,part,parts){
+      showStatus("Recitation model "+(total?Math.round(got/total*100)+"%":mb(got))+
+        (parts>1?" (part "+part+" of "+parts+")":"")+" — you can keep reading","");
     }).then(function(){
       showStatus("Recitation model ready","done");
       setTimeout(hideStatus,3500);
@@ -1330,7 +1360,7 @@ function paintOfflineNote(){
 }
 
 /* ---------- playback ---------- */
-var audio=new Audio(), playing=false, playA=0, playLeft=1, blobUrl=null, playToken=0;
+var audio=new Audio(), playing=false, playA=0, playLeft=1, blobUrl=null, playToken=0, playOnly=false;
 audio.preload="none";
 var PLAY_ICON='<path d="M7 4.5v15l13-7.5z"/>', PAUSE_ICON='<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
 
@@ -1405,6 +1435,9 @@ audio.addEventListener("error",function(){
 audio.addEventListener("ended",function(){
   if(!playing) return;
   if(playLeft>1){ playLeft--; audio.currentTime=0; audio.play(); return; }
+  /* "Play this ayah" means this ayah. It used to hand over to the same
+     advance path as "Play from here" and carry on through the surah. */
+  if(playOnly){ stopAudio(); return; }
   var last=loopTo?loopTo:SUR[curS-1].count;
   if(playA>=last){
     if(loopTo){
@@ -1417,18 +1450,19 @@ audio.addEventListener("ended",function(){
   playAyah(playA+1,store.arep||1);
 });
 function stopAudio(){
-  playing=false;
+  playing=false; playOnly=false;
   try{ audio.pause(); }catch(e){}
   releaseBlob();
   setPlayIcon(false); markPlaying(0); hideStatus(); paintCounter();
 }
 $("playBtn").onclick=function(){
   if(playing){ stopAudio(); return; }
+  playOnly=false;
   var start=curA||(loopTo?loopFrom:(SEQ[pos]?SEQ[pos].a:1));
   playAyah(start,store.arep||1);
 };
-$("playOne").onclick=function(){ stopAudio(); playAyah(curA,1); };
-$("playFrom").onclick=function(){ stopAudio(); playAyah(curA,store.arep||1); };
+$("playOne").onclick=function(){ stopAudio(); playOnly=true; playAyah(curA,store.arep||1); };
+$("playFrom").onclick=function(){ stopAudio(); playOnly=false; playAyah(curA,store.arep||1); };
 
 /* ---------- repetition counter ---------- */
 function focusAyah(){
@@ -1519,6 +1553,58 @@ document.addEventListener("click",function(e){
 /* ---------- navigation ---------- */
 $("toIndex").onclick=function(){ drawer(true) };
 $("toTools").onclick=function(){ openPanel(focusAyah()) };
+
+/* ---------- dragging a sheet down to dismiss it ----------
+
+   On a phone these panels cover the page, and the only way out was a small
+   × in the corner. Every other bottom sheet on a phone closes by pulling it
+   down, so this one does too: the sheet follows the finger and either snaps
+   back or closes, depending on how far and how fast it was thrown.
+
+   A drag that begins inside the scrolling body is only a dismissal when
+   that body is already at the top — otherwise it is a scroll, and stealing
+   it would make the panel impossible to read. */
+(function(){
+  var PANELS=["panel","dlPanel","revPanel"];
+  var CLOSERS={panel:function(){closePanel()},dlPanel:function(){dlPanel(false)},
+               revPanel:function(){revPanel(false)}};
+
+  PANELS.forEach(function(id){
+    var el=$(id); if(!el) return;
+    var body=el.querySelector(".pbody");
+    var y0=0,t0=0,dy=0,live=false;
+
+    el.addEventListener("pointerdown",function(e){
+      if(innerWidth>=1024) return;              /* a side sheet, not a bottom one */
+      if(e.pointerType==="mouse"&&e.button!==0) return;
+      var inBody=body&&body.contains(e.target);
+      if(inBody&&body.scrollTop>0) return;      /* they are scrolling, not dismissing */
+      if(e.target.closest("button,select,input,a,.surlist")) return;
+      y0=e.clientY; t0=Date.now(); dy=0; live=true;
+      el.classList.add("dragging");
+    });
+
+    el.addEventListener("pointermove",function(e){
+      if(!live) return;
+      dy=e.clientY-y0;
+      if(dy<0) dy=dy/4;                          /* resist upward, do not follow it */
+      el.style.transform="translateY("+dy+"px)";
+    });
+
+    function release(){
+      if(!live) return;
+      live=false;
+      el.classList.remove("dragging");
+      el.style.transform="";
+      var far=dy>110;
+      var flick=dy>40&&(Date.now()-t0)<300;     /* a short sharp pull counts too */
+      if(far||flick) CLOSERS[id]();
+    }
+    el.addEventListener("pointerup",release);
+    el.addEventListener("pointercancel",release);
+    el.addEventListener("pointerleave",function(e){ if(live&&e.buttons===0) release(); });
+  });
+})();
 
 /* swipe right anywhere in the mushaf goes back to the surah list */
 (function(){

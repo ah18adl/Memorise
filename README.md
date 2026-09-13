@@ -20,6 +20,29 @@ so local testing works without a certificate.
 Cloudflare Pages at a repo containing it. No build command, no output
 directory — publish the folder as-is.
 
+**Which host, once the model is involved.** The app itself is about 4 MB, which
+nobody minds. The model is ~95 MB, and that is what separates the free tiers:
+
+| Host | Free bandwidth | Largest single file |
+|---|---|---|
+| Cloudflare Pages | unlimited | **25 MiB** |
+| GitHub Pages | 100 GB/mo (soft) | 100 MB (Git's limit) |
+| Netlify / Vercel | 100 GB/mo | fine |
+
+Cloudflare Pages is the best of these — unlimited bandwidth costs nothing — and
+its file cap is the only thing in the way. So the model can be split:
+
+```bash
+python3 ctc/split_model.py web-model/model.int8.onnx --max-mb 20
+```
+
+That writes `model.int8.onnx.part00`, `part01`, … beside the original and
+prints the `config.js` block to paste in. The app fetches the parts in order,
+skips any already saved, and joins them back into one buffer before the runtime
+sees it — the split is invisible past the download. Keep the `modelSize` line
+the script prints: without it there is no total to measure against, so the
+panel shows megabytes instead of a percentage.
+
 **GitHub Pages.** Push the folder to a repo and enable Pages on that branch.
 If it lands in a subpath (`/sabaq/`), everything still works: all paths in the
 app are relative.
@@ -198,6 +221,35 @@ worker, asserting that no word is emitted twice across window boundaries and
 that a 12 kHz tone is rejected rather than folded into the speech band.
 `ctc/web/test_worker.mjs` checks the log-softmax against a reference and that a
 loud and a quiet recording of the same thing reach the model identically.
+
+---
+
+## Tajwīd colouring
+
+Display menu → **Tajwīd colouring**. The rules are derived from the text, not
+read from a tag file, because the Uthmani script already records what they
+need: sukūn is written (37,147 of them), shadda is written (22,679), the madd
+sign marks every lengthening beyond the natural two counts, and iqlāb carries
+its own small mīm.
+
+Coloured: ghunnah, idghām, ikhfāʾ, iqlāb, qalqalah, madd lāzim, madd
+wājib/jāʾiz, and the silent lām of the definite article. Izhār is left plain —
+"pronounce it clearly" is the absence of a rule, and colouring it would say
+otherwise. Natural madd falls on more than half the words in the mushaf, so it
+is computed but not shown; `markAyah(words, esc, {natural:true})` turns it on.
+
+Two things it deliberately will not do. It does not guess at **waqf** — qalqalah
+and madd ʿāriḍ change with where the reciter chooses to stop, and colour that is
+wrong as often as it is right teaches nothing. And it stands down wherever a
+word is concealed or marked as a mistake: the colour is set on the letters, so
+without that it would show through a hidden word and defeat the mode.
+
+`ctc/web/test_tajweed.mjs` checks it against ayāt whose rulings are not in
+dispute — `مِّن رَّبِّهِمْ` for idghām, `مِنۢ بَعۡدِ` for iqlāb, `يَنقُضُونَ`
+for ikhfāʾ, `أَنۡعَمۡتَ` for izhār, `ٱلضَّآلِّينَ` for madd lāzim — naming each
+word rather than its position, then runs the whole mushaf: 77,430 words,
+83,187 rulings. The iqlāb count lands at 604 against 609 scribal meems in the
+text, which is the cross-check that matters.
 
 ---
 

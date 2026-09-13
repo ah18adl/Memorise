@@ -19,6 +19,7 @@ var SHELL_FILES = [
   "styles.css",
   "config.js",
   "tracker.js",
+  "tajweed.js",
   "ctc-align.js",
   "ctc-engine.js",
   "ctc-worker.js",
