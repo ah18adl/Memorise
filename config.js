@@ -12,6 +12,12 @@
 
 window.SABAQ_CONFIG = {
 
+  /* Bumped on every deploy. app.js carries the same string; if the two ever
+     disagree, the browser is holding files from two different builds and the
+     app says so rather than half-working. */
+  version: "2026-09-12c",
+
+
   /* The on-device recitation model. `model` and `meta` are the two files the
      Colab notebook writes into web-model/ — copy that folder in beside this
      file. `ort` and `wasm` point at the ONNX runtime; pin a version you have

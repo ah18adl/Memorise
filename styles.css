@@ -385,3 +385,10 @@ main{min-width:0;padding-block:22px 210px;max-width:760px;margin:0 auto}
    not a claim that the word was wrong. */
 .w.soft .aw{text-decoration:underline wavy var(--brass);text-underline-offset:.22em;text-decoration-thickness:1px}
 .w.soft .badletters{color:var(--brass);font-style:normal}
+
+/* Said plainly, at the top, because a silently half-working app is worse
+   than a broken one. */
+.banner{position:fixed;inset:0 0 auto 0;z-index:60;display:flex;gap:12px;align-items:center;
+  justify-content:center;flex-wrap:wrap;padding:10px 16px;background:var(--sabaq);
+  color:#fff;font-size:13px;line-height:1.4;box-shadow:var(--shadow)}
+.banner .btn{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.4);color:#fff}

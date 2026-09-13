@@ -17,6 +17,10 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<div class="banner" id="banner" hidden>
+  <span id="bannerMsg"></span>
+  <button class="btn" id="bannerFix">Reset and reload</button>
+</div>
 <div class="top">
   <div class="top-in">
     <button class="icon lead" id="toIndex" aria-label="All surahs" title="All surahs">
@@ -152,7 +156,11 @@
       <div id="dlList" class="dllist"></div>
       <div class="foot">
         <button class="btn" id="dlClear">Remove all saved audio</button>
+        <button class="btn" id="appReset">Reset the app</button>
       </div>
+      <div class="note">Resetting clears the cached copy of the app and reloads it from the
+        server. Saved recitation and your progress are left alone. Use it if an update does
+        not seem to have arrived.</div>
     </div>
   </div>
 </section>

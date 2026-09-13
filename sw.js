@@ -9,7 +9,7 @@
    opaque: the page cannot read them, but this worker can hand them straight
    to the <audio> element, which is what makes offline playback work. */
 
-var SHELL = "sabaq-shell-v2";   /* bumped: new files in the shell, so old copies must go */
+var SHELL = "sabaq-shell-v3";   /* bumped: new files in the shell, so old copies must go */
 var AUDIO = "sabaq-audio-v1";
 var MODEL = "sabaq-model-v1";   /* the on-device recitation model, and the runtime it needs */
 
@@ -58,9 +58,25 @@ function isAudio(url) {
   return /\.mp3(\?|$)/i.test(url) || /\/quran\/audio\//.test(url);
 }
 
+/* The ONNX runtime and its wasm, wherever config.js points them.
+   Matched on the FILENAME, never the whole URL: "ort" is three letters that
+   turn up inside ordinary words, so a pattern loose enough to catch
+   "ort.min.js" anywhere in a URL also catches every script on a site hosted
+   at report., support. or effort. — which quietly routes the app's own code
+   into the model cache and half-breaks it. */
 function isRuntime(url) {
-  /* the ONNX runtime and its wasm, wherever config.js points them */
-  return /onnxruntime|ort[-.].*\.(js|wasm|mjs)(\?|$)|\.wasm(\?|$)/i.test(url);
+  var path;
+  try { path = new URL(url).pathname; } catch (e) { path = String(url); }
+  var file = path.split("/").pop().split("?")[0];
+  return /^ort([-.][^/]*)?\.(m?js|wasm)$/i.test(file) || /\/onnxruntime[^/]*\//i.test(path);
+}
+
+/* Code changes between deploys; the Qur'an text does not. So the files that
+   carry behaviour are fetched fresh when there is a network and fall back to
+   the cache when there is not, and the megabytes of text stay cache-first. */
+function isCode(url) {
+  return /\/(index\.html|app\.js|styles\.css|tracker\.js|ctc-[a-z]+\.js|manifest\.webmanifest)(\?|$)/.test(url) ||
+         /\/$/.test(url.split("?")[0]);
 }
 
 self.addEventListener("fetch", function (e) {
@@ -125,19 +141,39 @@ self.addEventListener("fetch", function (e) {
     return;
   }
 
-  // the app itself: cache first, and refresh the copy in the background
-  if (req.url.indexOf(self.registration.scope) === 0) {
+  if (req.url.indexOf(self.registration.scope) !== 0) return;
+
+  // the code: network first, so a redeploy takes effect on the next load
+  // rather than the one after it, with the cache behind it for offline use
+  if (isCode(req.url)) {
     e.respondWith(
-      caches.match(req).then(function (hit) {
-        var net = fetch(req).then(function (res) {
-          if (res && res.ok) {
-            var copy = res.clone();
-            caches.open(SHELL).then(function (c) { c.put(req, copy); });
-          }
-          return res;
-        }).catch(function () { return hit; });
-        return hit || net;
+      fetch(req).then(function (res) {
+        if (res && res.ok) {
+          var copy = res.clone();
+          caches.open(SHELL).then(function (c) { c.put(req, copy); });
+        }
+        return res;
+      }).catch(function () {
+        return caches.match(req).then(function (hit) {
+          return hit || caches.match("index.html");
+        });
       })
     );
+    return;
   }
+
+  // everything else — the text, the icons — never changes: cache first,
+  // refreshed quietly in the background
+  e.respondWith(
+    caches.match(req).then(function (hit) {
+      var net = fetch(req).then(function (res) {
+        if (res && res.ok) {
+          var copy = res.clone();
+          caches.open(SHELL).then(function (c) { c.put(req, copy); });
+        }
+        return res;
+      }).catch(function () { return hit; });
+      return hit || net;
+    })
+  );
 });

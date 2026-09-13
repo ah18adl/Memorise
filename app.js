@@ -40,6 +40,42 @@ setTimeout(function(){connectDb(4)},400);
 /* ---------- text helpers ---------- */
 function pad(n){return n<10?"0"+n:""+n}
 function arDigits(n){return String(n).replace(/\d/g,function(d){return String.fromCharCode(0x660+ +d)})}
+var BUILD="2026-09-12c";
+
+/* A half-updated app is the worst failure mode there is: nothing throws, a
+   few things quietly do not work, and the cause is invisible. So the two
+   files most likely to disagree carry the same stamp, and disagreeing is
+   something the app announces. */
+function banner(msg){
+  var b=$("banner"); if(!b) return;
+  $("bannerMsg").textContent=msg; b.hidden=false;
+}
+function resetApp(){
+  var done=Promise.resolve();
+  if(navigator.serviceWorker&&navigator.serviceWorker.getRegistrations)
+    done=navigator.serviceWorker.getRegistrations().then(function(rs){
+      return Promise.all(rs.map(function(r){return r.unregister()}));
+    }).catch(function(){});
+  return done.then(function(){
+    /* saved recitation and the model are deliberately kept */
+    return window.caches?caches.keys().then(function(ks){
+      return Promise.all(ks.map(function(k){
+        return /audio|model/.test(k)?null:caches.delete(k);
+      }));
+    }):null;
+  }).catch(function(){}).then(function(){ location.reload(true); });
+}
+if(!window.SABAQ_CONFIG){
+  banner("config.js did not load — the reciter list will be empty. Check it uploaded.");
+  /* stand something in its place. Without audio the mushaf is still a mushaf:
+     reading, concealment, word-by-word and the microphone all work, and there
+     is no reason for a missing config file to take them down with it. */
+  window.SABAQ_CONFIG={version:BUILD,defaultSource:"everyayah",defaultReciter:"",
+    sources:{everyayah:{label:"everyayah.com",url:function(){return ""}}},reciters:[]};
+}else if(SABAQ_CONFIG.version&&SABAQ_CONFIG.version!==BUILD){
+  banner("These files are from two different builds ("+SABAQ_CONFIG.version+" and "+BUILD+").");
+}
+
 function esc(t){return t.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;")}
 function mb(n){return (n/1048576).toFixed(n<10485760?1:0)+" MB"}
 var DIAC=/[\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06ED\u08D3-\u08FF\u0640\u200B-\u200F]/g;
@@ -1051,7 +1087,15 @@ $("dlJuz").onclick=function(){
 /* ---------- reciter pickers ---------- */
 function fillReciters(){
   var list=availableReciters(), h="";
-  if(!list.length) list=CFG.reciters;
+  if(!list.length) list=CFG.reciters||[];
+  if(!list.length){
+    /* no reciters configured at all: say so in the control itself rather
+       than throwing and taking the rest of the app down with it */
+    ["reciter","reciter2"].forEach(function(id){
+      var sel=$(id); if(sel){ sel.innerHTML='<option>No reciters configured</option>'; sel.disabled=true; }
+    });
+    return;
+  }
   for(var i=0;i<list.length;i++) h+='<option value="'+list[i].id+'">'+list[i].name+'</option>';
   var cur=recId()||list[0].id;
   ["reciter","reciter2"].forEach(function(id){
@@ -1230,6 +1274,8 @@ function dlPanel(on){
   if(on){ paintDownloads(); paintOfflineNote(); }
 }
 $("dlOpen").onclick=function(){ dlPanel(true); paintEngine(); };
+if($("bannerFix")) $("bannerFix").onclick=resetApp;
+if($("appReset")) $("appReset").onclick=function(){ this.textContent="Reloading…"; resetApp(); };
 $("dlClose").onclick=function(){ dlPanel(false) };
 
 fillReciters(); paintAudioBtns(); paintDownloads(); paintOfflineNote();
