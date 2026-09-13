@@ -231,9 +231,22 @@ fill your cache with 404s.
 
 ## How offline audio works
 
-Press the download icon in the top bar, pick a reciter, then **Download this
-surah** or **Download this juzʾ**. Files go into the browser's Cache Storage
-and play from there with no network at all.
+Press the download icon in the top bar and pick a reciter. Below that is every
+surah, with what is saved marked on each row: **Saved**, a part count like
+`43 of 129` when a download was interrupted, or an estimated size when it is
+not there at all. Tick any combination, or use the shortcuts — this surah, this
+juzʾ, everything not yet saved, all 114 — and press **Download selected**. The
+summary line says how many ayat still have to be fetched and roughly how much
+that is, before you commit to it. Files go into the browser's Cache Storage and
+play from there with no network at all.
+
+**What "saved" means is read from the cache itself**, not from a note kept
+alongside it. Browsers evict storage under pressure without telling anyone, and
+a remembered flag would go on claiming a surah was saved until you tried to
+recite it on a train. Cache entries are matched to surahs by generating every
+ayah URL the current reciter and source would use and looking each one up —
+which costs a few milliseconds and works for any source added to `config.js`
+later, whatever shape its URLs take.
 
 The mechanism is worth knowing because it constrains things:
 

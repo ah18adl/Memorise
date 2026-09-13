@@ -40,7 +40,7 @@ setTimeout(function(){connectDb(4)},400);
 /* ---------- text helpers ---------- */
 function pad(n){return n<10?"0"+n:""+n}
 function arDigits(n){return String(n).replace(/\d/g,function(d){return String.fromCharCode(0x660+ +d)})}
-var BUILD="2026-09-12d";
+var BUILD="2026-09-13c";
 
 /* A half-updated app is the worst failure mode there is: nothing throws, a
    few things quietly do not work, and the cause is invisible. So the two
@@ -487,8 +487,16 @@ var mistakes=[];                       /* this session's findings */
    letter, which is the only way madd length is measurable. */
 var CTC=window.SabaqCTC;
 var localOK=!!(CTC&&CTC.supported());
-var engine=(store.engine==="local"&&localOK)?"local":"speech";
-if(!SR&&localOK) engine="local";
+
+/* The on-device model is the default. It is the better engine by every
+   measure that matters here — it times letters, it needs no network, and
+   your voice never leaves the phone — so making people find it in a
+   settings panel meant almost nobody would. The browser recogniser is now
+   the fallback, chosen only where WebAssembly is not available or where
+   someone deliberately switches. */
+var engine = store.engine ? store.engine : (localOK ? "local" : "speech");
+if(engine==="local" && !localOK) engine="speech";
+if(engine==="speech" && !SR && localOK) engine="local";
 function engineAvailable(){ return engine==="local" ? localOK : !!SR; }
 if(!SR&&!localOK){
   $("micBtn").disabled=true;
@@ -650,7 +658,17 @@ function startMic(){
   else if(!pos) pos=0;
   makeTracker();
 
-  if(engine==="local") startLocal(); else startSpeech();
+  /* Default does not mean "make them wait". If the model is still
+     downloading, the browser recogniser covers this session rather than
+     holding the microphone hostage to 95 MB. */
+  if(engine==="local"){
+    if(CTC.loaded()||!SR) startLocal();
+    else {
+      startSpeech();
+      showStatus("Using the browser recogniser while the model downloads","lost");
+      setTimeout(function(){ if(listening) statusText(); },3500);
+    }
+  } else startSpeech();
 }
 
 /* ---- the on-device model ---- */
@@ -784,7 +802,9 @@ function paintEngine(){
     $("mdlDrop").style.display=b?"":"none";
     note.textContent=b
       ? "Saved on this device ("+mb(b)+"). Your voice never leaves the phone, and every letter is timed, so madd length is measured rather than guessed."
-      : "A one-off download of about 95 MB. After that it runs on the device with no network, and times every letter.";
+      : (lastModelError
+          ? "The model could not be fetched: "+lastModelError+" — check that web-model/ was uploaded beside config.js."
+          : "A one-off download of about 95 MB. It starts by itself on wi-fi; until it finishes, listening falls back to the browser's recogniser.");
   });
 }
 
@@ -812,6 +832,48 @@ if($("mdlDrop")) $("mdlDrop").onclick=function(){
   CTC.clearModel().then(paintEngine);
 };
 paintEngine();
+
+/* A 95 MB download nobody asked for is rude on a train and rude on a
+   metered plan. So it starts by itself only where that is reasonable —
+   and where the app is a native build the model ships inside it, so
+   there is nothing to fetch at all. */
+function connectionAllowsBigFetch(){
+  var c=navigator.connection||navigator.mozConnection||navigator.webkitConnection;
+  if(!c) return true;                                  /* no information: assume fine */
+  if(c.saveData) return false;                         /* they asked us not to */
+  var t=c.effectiveType||"";
+  return t!=="slow-2g" && t!=="2g";
+}
+
+function autoFetchModel(){
+  if(!CTC||!localOK||engine!=="local") return;
+  if(window.SABAQ_NATIVE) return;                      /* bundled with the app */
+  if(store.modelDeclined) return;
+  CTC.modelPresent().then(function(have){
+    if(have) return;
+    if(!connectionAllowsBigFetch()){
+      showStatus("The recitation model is not saved yet — open Audio to fetch it on wi-fi","lost");
+      setTimeout(hideStatus,6000);
+      return;
+    }
+    showStatus("Preparing the recitation model — you can keep reading","");
+    CTC.download(function(got,total){
+      showStatus("Recitation model "+(total?Math.round(got/total*100)+"%":mb(got))+" — you can keep reading","");
+    }).then(function(){
+      showStatus("Recitation model ready","done");
+      setTimeout(hideStatus,3500);
+      paintEngine();
+    }).catch(function(e){
+      /* not fatal: the browser recogniser still works, and the panel
+         explains what happened rather than nagging from the dock */
+      hideStatus();
+      lastModelError=String(e.message||e);
+      paintEngine();
+    });
+  });
+}
+var lastModelError="";
+setTimeout(autoFetchModel,1200);
 
 /* ---------- the review sheet ---------- */
 function paintRevDot(){
@@ -923,7 +985,7 @@ function recId(){ var r=recObj(); return r?r.id:"" }
 
 /* ---------- offline store ---------- */
 function savedKey(s){ return recId()+"|"+srcKey()+"|"+s }
-function isSaved(s){ return !!(store.saved&&store.saved[savedKey(s)]) }
+function isSaved(s){ return (SAVED[s]||0) >= SUR[s-1].count; }
 function markSaved(s,n){ store.saved=store.saved||{}; store.saved[savedKey(s)]={n:n,at:Date.now()}; save(); }
 function unmarkSaved(k){ if(store.saved) delete store.saved[k]; save(); }
 
@@ -946,6 +1008,10 @@ function juzSurahs(s){
    cache.put accepts those (cache.add rejects them), and only the service
    worker can hand one back to the audio element. Both are stored here. */
 function cacheOne(cache,url){
+  /* Inside a native shell there is no service worker to hand an opaque
+     response back to the audio element, so files go to the filesystem
+     instead. Everything above this line is unchanged either way. */
+  if(window.SABAQ_FS) return window.SABAQ_FS.put(url);
   return fetch(url,{mode:"cors"}).then(function(r){
     if(r&&r.ok) return cache.put(url,r.clone());
     throw 0;
@@ -971,83 +1037,169 @@ function probeUrl(url){
     a.src=url; a.load();
   });
 }
-function withProbe(urls,label,onDone){
-  $("dlNote").textContent="Checking " + reciterName() + " on " + (CFG.sources[srcKey()]||{}).label + "…";
-  probeUrl(urls[0]).then(function(ok){
-    if(!ok){
-      $("dlNote").textContent=reciterName()+" did not respond on "+((CFG.sources[srcKey()]||{}).label||"this source")+
-        ". Nothing was downloaded — try the other source, or another reciter.";
-      return;
-    }
-    downloadUrls(urls,label,onDone);
-  });
-}
 var dlAbort=false, dlBusy=false;
-function downloadUrls(urls,label,onDone){
-  if(!haveCaches){ $("dlNote").textContent="This browser will not let a page store files offline. Serve the app over https and try again."; return; }
-  if(dlBusy) return;
-  dlBusy=true; dlAbort=false;
-  var done=0,failed=0,total=urls.length,i=0,active=0;
-  $("dlProg").classList.add("on");
-  $("dlCancel").style.display="";
-  $("dlNote").textContent="Saving "+label+" — 0 of "+total;
-  caches.open(AUDIO_CACHE).then(function(cache){
-    function step(){
-      if(dlAbort||i>=urls.length){
-        if(active===0) finish();
-        return;
-      }
-      var u=urls[i++]; active++;
-      cacheOne(cache,u).catch(function(){failed++}).then(function(){
-        active--; done++;
-        $("dlBar").style.width=(done/total*100)+"%";
-        $("dlNote").textContent="Saving "+label+" — "+done+" of "+total+(failed?(" ("+failed+" failed)"):"");
-        step();
+/* ---------- the surah download manager ----------
+
+   Status is read from the cache, not from a note kept in localStorage. A
+   remembered flag drifts: the browser evicts entries under storage pressure
+   without telling anyone, and a half-evicted surah would keep claiming to be
+   saved until someone tried to recite it on a train. So the list is built by
+   asking the cache what it actually holds.
+
+   Matching cache entries to surahs without parsing URLs: every ayah URL the
+   current reciter and source would use is generated once — 6,236 of them,
+   a few milliseconds — and used as a lookup table. That works for any source
+   anyone adds to config.js later, however it shapes its URLs. */
+
+var SAVED=[];                 /* SAVED[s] = ayat of surah s present in the cache */
+var SEL={};                   /* which surahs are ticked */
+var scanSeq=0;
+
+function urlToSurah(){
+  var m={},s,a,u;
+  for(s=1;s<=114;s++){
+    for(a=1;a<=SUR[s-1].count;a++){ u=audioUrl(s,a); if(u) m[u]=s; }
+  }
+  return m;
+}
+
+function scanCache(){
+  var seq=++scanSeq;
+  var counts=[]; for(var i=0;i<=114;i++) counts[i]=0;
+  if(!haveCaches){ SAVED=counts; paintSurahs(); return Promise.resolve(counts); }
+  var map=urlToSurah();
+  /* the shim is handed the candidate urls rather than being asked to
+     reconstruct them from filenames on disk */
+  var keys = window.SABAQ_FS
+    ? window.SABAQ_FS.have(Object.keys(map))
+    : caches.open(AUDIO_CACHE).then(function(c){ return c.keys(); })
+        .then(function(rs){ return rs.map(function(r){ return r.url }) });
+  return keys.then(function(urls){
+    for(var k=0;k<urls.length;k++){
+      var s=map[urls[k]];
+      if(s) counts[s]++;
+    }
+    if(seq!==scanSeq) return counts;      /* a newer scan already ran */
+    SAVED=counts; paintSurahs(); paintOfflineNote();
+    return counts;
+  }).catch(function(){ SAVED=counts; paintSurahs(); return counts; });
+}
+
+/* 64 kbps mono is 8 KB per second, and an ayah averages a little under six
+   seconds across the whole mushaf. Good enough to warn someone before they
+   commit 300 MB; labelled approximate because it is. */
+function estBytes(ayat){ return ayat*45000; }
+function human(b){ return b>=1048576?(b/1048576).toFixed(b<10485760?1:0)+" MB":(b/1024).toFixed(0)+" KB"; }
+
+function savedState(s){
+  var n=SAVED[s]||0, total=SUR[s-1].count;
+  if(!n) return "none";
+  return n>=total?"full":"part";
+}
+
+/* Nobody types "An-Nās". They type "nas". Transliteration carries macrons
+   and dots that exist to be read, not typed, so both sides of the comparison
+   are folded down to plain letters first. */
+function fold(t){
+  return t.normalize ? t.normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9\u0600-\u06ff]+/gi,"").toLowerCase()
+                     : t.toLowerCase();
+}
+var FOLDED=null;
+function foldedNames(){
+  if(FOLDED) return FOLDED;
+  FOLDED=[];
+  for(var i=0;i<114;i++) FOLDED[i]=fold(SUR[i].tr)+" "+fold(SUR[i].en)+" "+SUR[i].ar;
+  return FOLDED;
+}
+
+function paintSurahs(){
+  var host=$("surList"); if(!host) return;
+  var raw=($("dlSearch")&&$("dlSearch").value||"").trim();
+  var q=fold(raw), names=foldedNames();
+  var out=[],shown=0;
+  for(var s=1;s<=114;s++){
+    var m=SUR[s-1];
+    if(raw && names[s-1].indexOf(q)<0 && String(s).indexOf(raw)!==0) continue;
+    shown++;
+    var st=savedState(s), n=SAVED[s]||0;
+    var tag = st==="full" ? '<span class="st ok">Saved</span>'
+            : st==="part" ? '<span class="st part">'+n+' of '+m.count+'</span>'
+            : '<span class="st">≈'+human(estBytes(m.count))+'</span>';
+    out.push('<label class="qrow'+(st==="full"?" done":"")+(s===curS?" here":"")+'" data-s="'+s+'">'+
+      '<input type="checkbox" data-s="'+s+'"'+(SEL[s]?" checked":"")+'>'+
+      '<b class="num mono">'+s+'</b>'+
+      '<span class="nm">'+esc(m.tr)+'<i>'+m.count+' ayāt</i></span>'+
+      tag+
+      (st==="none"?'':'<button class="rm" data-rm="'+s+'" title="Remove">×</button>')+
+    '</label>');
+  }
+  host.innerHTML=out.length?out.join(""):'<div class="dlempty">No surah matches that.</div>';
+  paintSummary();
+}
+
+function selectedSurahs(){
+  var list=[];
+  for(var s=1;s<=114;s++) if(SEL[s]) list.push(s);
+  return list;
+}
+
+function paintSummary(){
+  var list=selectedSurahs(), ayat=0, need=0;
+  for(var i=0;i<list.length;i++){
+    var s=list[i], total=SUR[s-1].count;
+    ayat+=total; need+=Math.max(0,total-(SAVED[s]||0));
+  }
+  var sum=$("dlSum");
+  if(!list.length) sum.textContent="Nothing selected. Tick a surah below, or use a shortcut above.";
+  else sum.innerHTML='<b>'+list.length+'</b> surah'+(list.length===1?"":"s")+
+      ' · '+ayat.toLocaleString()+' ayāt · '+
+      (need?('<b>'+need.toLocaleString()+'</b> still to fetch, about '+human(estBytes(need))):'already saved');
+  var done=0; for(var s2=1;s2<=114;s2++) if(savedState(s2)==="full") done++;
+  var badge=$("dlSavedCount");
+  if(badge) badge.textContent=done?(done+" of 114 saved"):"";
+  var go=$("dlGo"); if(go) go.disabled=!list.length||dlBusy;
+}
+
+/* ---- selection ---- */
+$("surList").addEventListener("change",function(e){
+  var cb=e.target.closest("input[type=checkbox]"); if(!cb) return;
+  var s=+cb.dataset.s;
+  if(cb.checked) SEL[s]=1; else delete SEL[s];
+  paintSummary();
+});
+$("surList").addEventListener("click",function(e){
+  var rm=e.target.closest("[data-rm]");
+  if(rm){ e.preventDefault(); e.stopPropagation(); removeSurah(+rm.dataset.rm); }
+});
+if($("dlSearch")) $("dlSearch").oninput=function(){ paintSurahs(); };
+
+$("dlPicks").addEventListener("click",function(e){
+  var b=e.target.closest("[data-sel]"); if(!b) return;
+  var how=b.dataset.sel, s;
+  if(how==="none") SEL={};
+  else if(how==="all"){ for(s=1;s<=114;s++) SEL[s]=1; }
+  else if(how==="cur"){ SEL={}; SEL[curS]=1; }
+  else if(how==="juz"){ SEL={}; juzSurahs(curS).surahs.forEach(function(n){ SEL[n]=1 }); }
+  else if(how==="missing"){ SEL={}; for(s=1;s<=114;s++) if(savedState(s)!=="full") SEL[s]=1; }
+  paintSurahs();
+});
+
+/* ---- removing ---- */
+function removeSurah(s){
+  if(!haveCaches) return;
+  var urls=surahUrls(s);
+  var gone = window.SABAQ_FS
+    ? Promise.all(urls.map(function(u){ return window.SABAQ_FS.remove(u) }))
+    : caches.open(AUDIO_CACHE).then(function(cache){
+        return Promise.all(urls.map(function(u){ return cache.delete(u) }));
       });
-    }
-    for(var k=0;k<4;k++) step();
-    function finish(){
-      dlBusy=false;
-      $("dlCancel").style.display="none";
-      $("dlProg").classList.remove("on");
-      $("dlBar").style.width="0%";
-      if(dlAbort){ $("dlNote").textContent="Stopped. What had already saved is kept."; }
-      else if(failed>=total){ $("dlNote").textContent="Nothing could be saved — the recitation source did not respond. Try the other source above."; }
-      else { $("dlNote").textContent="Saved "+label+(failed?(", "+failed+" ayat could not be fetched"):"")+"."; }
-      if(onDone) onDone(failed,total);
-      paintDownloads(); paintOfflineNote();
-    }
+  gone.then(function(){
+    unmarkSaved(savedKey(s));
+    scanCache(); paintStorage();
   });
 }
-$("dlCancel").onclick=function(){ dlAbort=true; };
 
-function removeSaved(key){
-  var parts=key.split("|"), rid=parts[0], sk=parts[1], s=+parts[2];
-  var keep={reciter:store.reciter,source:store.source};
-  store.reciter=rid; store.source=sk;
-  var urls=surahUrls(s);
-  store.reciter=keep.reciter; store.source=keep.source;
-  if(!haveCaches) return;
-  caches.open(AUDIO_CACHE).then(function(cache){
-    return Promise.all(urls.map(function(u){ return cache.delete(u) }));
-  }).then(function(){ unmarkSaved(key); paintDownloads(); paintOfflineNote(); });
-}
-
-function paintDownloads(){
-  var keys=Object.keys(store.saved||{});
-  var host=$("dlList");
-  if(!keys.length){ host.innerHTML='<div class="dlempty">Nothing saved yet.</div>'; }
-  else{
-    keys.sort();
-    host.innerHTML=keys.map(function(k){
-      var p=k.split("|"), s=+p[2], rec=null;
-          rec=recById(p[0]);
-      return '<div class="dlrow"><b>'+SUR[s-1].tr+'</b>'+
-        '<span style="color:var(--muted);font-size:12px">'+(rec?rec.name.split(" — ")[0]:p[0])+'</span>'+
-        '<span class="sz">'+store.saved[k].n+' ayāt</span>'+
-        '<button data-del="'+k+'">Remove</button></div>';
-    }).join("");
-  }
+function paintStorage(){
   if(navigator.storage&&navigator.storage.estimate){
     navigator.storage.estimate().then(function(e){
       if(!e||!e.usage) return;
@@ -1055,32 +1207,84 @@ function paintDownloads(){
     });
   }
 }
-$("dlList").addEventListener("click",function(e){
-  var b=e.target.closest("[data-del]"); if(b) removeSaved(b.dataset.del);
-});
-$("dlClear").onclick=function(){
-  if(!haveCaches) return;
-  caches.delete(AUDIO_CACHE).then(function(){
-    store.saved={}; save(); paintDownloads(); paintOfflineNote();
-  });
-};
-$("dlSurah").onclick=function(){
-  var urls=surahUrls(curS);
-  if(!urls.length){ $("dlNote").textContent="This reciter is not available on the selected source."; return; }
-  withProbe(urls,SUR[curS-1].tr,function(failed,total){
-    if(failed<total) markSaved(curS,total-failed);
-  });
-};
-$("dlJuz").onclick=function(){
-  var j=juzSurahs(curS), all=[], per=[];
-  j.surahs.forEach(function(n){ var u=surahUrls(n); per.push([n,u.length]); all=all.concat(u); });
-  if(!all.length){ $("dlNote").textContent="This reciter is not available on the selected source."; return; }
-  withProbe(all,"Juzʾ "+j.juz,function(failed,total){
-    if(failed<total){
-      var keep=curS;
-      per.forEach(function(x){ curS=x[0]; markSaved(x[0],x[1]); });
-      curS=keep;
+
+/* paintDownloads is what the rest of the app calls when the reciter, the
+   source or the panel changes. Both of those change which files count as
+   saved, so it rescans rather than redrawing stale numbers. */
+function paintDownloads(){ scanCache(); paintStorage(); }
+
+/* ---- downloading, surah by surah so the list fills in as it goes ---- */
+$("dlGo").onclick=function(){
+  var list=selectedSurahs();
+  if(!list.length) return;
+  if(!haveCaches){ $("dlNote").textContent="This browser will not let a page store files offline. Serve the app over https and try again."; return; }
+  var first=surahUrls(list[0]);
+  if(!first.length){ $("dlNote").textContent="This reciter is not available on the selected source."; return; }
+  $("dlNote").textContent="Checking "+reciterName()+" on "+((CFG.sources[srcKey()]||{}).label||"this source")+"…";
+  probeUrl(first[0]).then(function(ok){
+    if(!ok){
+      $("dlNote").textContent=reciterName()+" did not respond on "+((CFG.sources[srcKey()]||{}).label||"this source")+
+        ". Nothing was downloaded — try the other source, or another reciter.";
+      return;
     }
+    runQueue(list);
+  });
+};
+
+function runQueue(list){
+  dlBusy=true; dlAbort=false;
+  $("dlProg").classList.add("on");
+  $("dlCancel").style.display="";
+  $("dlGo").disabled=true;
+
+  var totalAyat=0,i;
+  for(i=0;i<list.length;i++) totalAyat+=SUR[list[i]-1].count;
+  var doneAyat=0, failedAll=0, at=0;
+
+  caches.open(AUDIO_CACHE).then(function(cache){
+    next();
+    function next(){
+      if(dlAbort||at>=list.length) return finish();
+      var s=list[at++], urls=surahUrls(s), done=0, failed=0, k=0, active=0;
+      if(!urls.length){ return next(); }
+      $("dlNote").textContent="Saving "+SUR[s-1].tr+" — surah "+at+" of "+list.length;
+      for(var c=0;c<4;c++) step();
+      function step(){
+        if(dlAbort||k>=urls.length){ if(active===0) surahDone(); return; }
+        var u=urls[k++]; active++;
+        cacheOne(cache,u).catch(function(){ failed++ }).then(function(){
+          active--; done++; doneAyat++;
+          $("dlBar").style.width=(doneAyat/totalAyat*100).toFixed(1)+"%";
+          step();
+        });
+      }
+      function surahDone(){
+        failedAll+=failed;
+        if(failed<urls.length) markSaved(s,urls.length-failed);
+        scanCache();
+        next();
+      }
+    }
+    function finish(){
+      dlBusy=false;
+      $("dlCancel").style.display="none";
+      $("dlProg").classList.remove("on");
+      $("dlBar").style.width="0%";
+      if(dlAbort) $("dlNote").textContent="Stopped. Everything already saved is kept.";
+      else if(failedAll>=totalAyat) $("dlNote").textContent="Nothing could be saved — the recitation source did not respond. Try the other source above.";
+      else $("dlNote").textContent="Saved "+list.length+" surah"+(list.length===1?"":"s")+
+        (failedAll?(", "+failedAll+" ayat could not be fetched"):"")+".";
+      scanCache(); paintStorage(); paintOfflineNote();
+    }
+  });
+}
+
+$("dlCancel").onclick=function(){ dlAbort=true; };
+
+$("dlClear").onclick=function(){
+  if(!haveCaches&&!window.SABAQ_FS) return;
+  (window.SABAQ_FS?window.SABAQ_FS.clear():caches.delete(AUDIO_CACHE)).then(function(){
+    store.saved={}; save(); scanCache(); paintStorage(); paintOfflineNote();
   });
 };
 
@@ -1158,6 +1362,7 @@ function releaseBlob(){ if(blobUrl){ URL.revokeObjectURL(blobUrl); blobUrl=null;
 function resolveSrc(url){
   /* a readable cached copy becomes a blob url, which sidesteps range-request
      quirks; an opaque cached copy is served by the service worker instead. */
+  if(window.SABAQ_FS) return window.SABAQ_FS.resolve(url);
   if(!haveCaches) return Promise.resolve(url);
   return caches.match(url).then(function(r){
     if(!r) return url;
@@ -1263,6 +1468,24 @@ function paintCounter(){
   });
   el.addEventListener("pointercancel",endHold);
   el.addEventListener("pointerleave",endHold);
+
+  /* It is a <button>, so Enter and Space fire a click — and a counter that
+     only answers to a finger is unusable with a keyboard or a switch.
+     A keyboard-generated click carries detail 0, which is what separates
+     it from the click the browser synthesises after a real tap; without
+     that test every tap would count twice. */
+  el.addEventListener("click",function(e){
+    if(e.detail!==0) return;
+    bump(focusAyah(),1); paintCounter();
+  });
+  el.addEventListener("keydown",function(e){
+    if(e.key!=="Backspace"&&e.key!=="Delete") return;
+    e.preventDefault();
+    var a=focusAyah();
+    setRec(curS,a,{rp:0});
+    updateAyahRow(a); paintCounter();
+    if(curA===a) paintReps();
+  });
 })();
 
 /* ---------- downloads panel ---------- */
@@ -1302,7 +1525,11 @@ $("toTools").onclick=function(){ openPanel(focusAyah()) };
   var x0=0,y0=0,t0=0,live=false;
   document.addEventListener("touchstart",function(e){
     if(e.touches.length!==1){ live=false; return; }
-    if(e.target.closest(".drawer,.panel,.dock,.seg,.mini,.step")){ live=false; return; }
+    /* The drawer is not excluded: a horizontal drag across it should close
+       it, the way every other sheet on a phone behaves. Vertical scrolling
+       of the surah list is protected by the dx/dy ratio test below, not by
+       refusing to listen here. Controls that consume their own drags are. */
+    if(e.target.closest(".panel,.dock,.seg,.mini,.step,.surlist")){ live=false; return; }
     var t=e.touches[0]; x0=t.clientX; y0=t.clientY; t0=Date.now(); live=true;
   },{passive:true});
   document.addEventListener("touchend",function(e){

@@ -5,15 +5,17 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Sabaq Mushaf</title>
 <meta name="description" content="A mushaf built for hifz: concealment, recite-to-reveal, loop ranges and sabaq/sabqi/manzil tracking.">
-<meta name="theme-color" content="#EFEFEC" media="(prefers-color-scheme: light)">
-<meta name="theme-color" content="#101215" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#F4F1E8" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131211" media="(prefers-color-scheme: dark)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Sabaq">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon-192.png" sizes="192x192">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Scheherazade+New:wght@400;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Scheherazade+New:wght@400;500;700&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,400&family=Archivo:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -127,7 +129,7 @@
     </div>
 
     <div class="grp">
-      <div class="lbl">Listening</div>
+      <div class="lbl">Recitation engine — how Sabaq hears you</div>
       <select class="sel" id="engineSel" aria-label="Recitation engine">
         <option value="speech">Browser speech recognition</option>
         <option value="local">On-device model — letter accurate</option>
@@ -141,19 +143,27 @@
     </div>
 
     <div class="grp">
-      <div class="lbl">Save for offline</div>
+      <div class="lbl">Save for offline<em id="dlSavedCount"></em></div>
+      <div class="qpicks" id="dlPicks">
+        <button class="qpick" data-sel="cur">This surah</button>
+        <button class="qpick" data-sel="juz">This juzʾ</button>
+        <button class="qpick" data-sel="missing">Everything not saved</button>
+        <button class="qpick" data-sel="all">All 114</button>
+        <button class="qpick" data-sel="none">Clear</button>
+      </div>
+      <div class="dlsum" id="dlSum">Nothing selected.</div>
       <div class="foot">
-        <button class="btn pri" id="dlSurah">Download this surah</button>
-        <button class="btn" id="dlJuz">Download this juzʾ</button>
+        <button class="btn pri" id="dlGo">Download selected</button>
+        <button class="btn" id="dlCancel" style="display:none">Stop</button>
       </div>
       <div class="prog" id="dlProg"><i id="dlBar"></i></div>
       <div class="note" id="dlNote">Saved recitation plays with no network at all. Downloads continue in the background — you can keep reading.</div>
-      <button class="btn" id="dlCancel" style="display:none">Stop downloading</button>
     </div>
 
     <div class="grp">
-      <div class="lbl">Saved</div>
-      <div id="dlList" class="dllist"></div>
+      <div class="lbl">All surahs</div>
+      <input class="search" id="dlSearch" placeholder="Find a surah by name or number" autocomplete="off">
+      <div id="surList" class="surlist"></div>
       <div class="foot">
         <button class="btn" id="dlClear">Remove all saved audio</button>
         <button class="btn" id="appReset">Reset the app</button>
