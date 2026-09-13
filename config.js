@@ -15,7 +15,7 @@ window.SABAQ_CONFIG = {
   /* Bumped on every deploy. app.js carries the same string; if the two ever
      disagree, the browser is holding files from two different builds and the
      app says so rather than half-working. */
-  version: "2026-09-12c",
+  version: "2026-09-12d",
 
 
   /* The on-device recitation model. `model` and `meta` are the two files the

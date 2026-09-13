@@ -388,7 +388,12 @@ main{min-width:0;padding-block:22px 210px;max-width:760px;margin:0 auto}
 
 /* Said plainly, at the top, because a silently half-working app is worse
    than a broken one. */
-.banner{position:fixed;inset:0 0 auto 0;z-index:60;display:flex;gap:12px;align-items:center;
-  justify-content:center;flex-wrap:wrap;padding:10px 16px;background:var(--sabaq);
-  color:#fff;font-size:13px;line-height:1.4;box-shadow:var(--shadow)}
+/* In the document flow, not fixed over it. A fixed bar here sits on top of
+   the sticky header and silently swallows clicks on the surah list and the
+   settings button — a diagnostic that breaks the app is worse than none.
+   And `display:flex` on a class beats the browser's own [hidden] rule, so
+   the hidden state has to be spelled out or the bar is always on screen. */
+.banner{display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap;
+  padding:10px 16px;background:var(--sabaq);color:#fff;font-size:13px;line-height:1.4}
+.banner[hidden]{display:none}
 .banner .btn{background:rgba(255,255,255,.16);border-color:rgba(255,255,255,.4);color:#fff}

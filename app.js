@@ -40,7 +40,7 @@ setTimeout(function(){connectDb(4)},400);
 /* ---------- text helpers ---------- */
 function pad(n){return n<10?"0"+n:""+n}
 function arDigits(n){return String(n).replace(/\d/g,function(d){return String.fromCharCode(0x660+ +d)})}
-var BUILD="2026-09-12c";
+var BUILD="2026-09-12d";
 
 /* A half-updated app is the worst failure mode there is: nothing throws, a
    few things quietly do not work, and the cause is invisible. So the two
@@ -1274,6 +1274,8 @@ function dlPanel(on){
   if(on){ paintDownloads(); paintOfflineNote(); }
 }
 $("dlOpen").onclick=function(){ dlPanel(true); paintEngine(); };
+if($("buildStamp")) $("buildStamp").textContent=
+  BUILD+(SABAQ_CONFIG.version===BUILD?"":" / config "+(SABAQ_CONFIG.version||"unstamped"));
 if($("bannerFix")) $("bannerFix").onclick=resetApp;
 if($("appReset")) $("appReset").onclick=function(){ this.textContent="Reloading…"; resetApp(); };
 $("dlClose").onclick=function(){ dlPanel(false) };
